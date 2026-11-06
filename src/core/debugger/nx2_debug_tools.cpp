@@ -55,6 +55,7 @@ struct ToolState {
     std::string log_filter{Settings::values.log_filter.GetValue()};
     u64 captures{};
     u64 screenshots{};
+    u64 memory_id{};
     std::atomic<bool> stopping{};
     /// Serialises pause, resume and step between clients, so two of them cannot fight over the
     /// emulator's suspend state.
@@ -67,8 +68,7 @@ std::string Hex(u64 value) {
     return fmt::format("{:016x}", value);
 }
 
-json HexList(const std::vector<u64>& values) {
-    json list = json::array();
+json HexList(const std::vector<u64>& values) {    json list = json::array();
     for (const u64 value : values) {
         list.push_back(Hex(value));
     }
@@ -83,6 +83,44 @@ T Param(const json& params, const char* name, T fallback, T low, T high) {
 
 bool IsVulkan() {
     return Settings::values.renderer_backend.GetValue() == Settings::RendererBackend::Vulkan;
+}
+
+/// Bytes to write, from "bytes_base64". Throws on anything that is not valid base64.
+std::vector<u8> DecodeBytes(const json& params) {
+    const std::string text = params.value("bytes_base64", std::string{});
+    if (text.empty()) {
+        throw std::runtime_error{"bytes_base64 is required"};
+    }
+    std::vector<u8> bytes;
+    bytes.reserve(text.size() / 4 * 3);
+    u32 chunk{};
+    int bits{};
+    for (const char character : text) {
+        if (character == '=') {
+            break;
+        }
+        u32 value{};
+        if (character >= 'A' && character <= 'Z') {
+            value = static_cast<u32>(character - 'A');
+        } else if (character >= 'a' && character <= 'z') {
+            value = static_cast<u32>(character - 'a' + 26);
+        } else if (character >= '0' && character <= '9') {
+            value = static_cast<u32>(character - '0' + 52);
+        } else if (character == '+') {
+            value = 62;
+        } else if (character == '/') {
+            value = 63;
+        } else {
+            throw std::runtime_error{"bytes_base64 is not valid base64"};
+        }
+        chunk = (chunk << 6) | value;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            bytes.push_back(static_cast<u8>((chunk >> bits) & 0xff));
+        }
+    }
+    return bytes;
 }
 
 /// Waits for a future in short slices so a stopping server does not wait out the timeout.
@@ -350,6 +388,97 @@ json RejectShaders(ToolState&, const json& params) {
     return result;
 }
 
+json ReadGuestMemory(ToolState& state, const json& params) {
+    const u64 address = Param<u64>(params, "address", 0, 0, 0x7fff'ffff'ffff);
+    const int size = Param<int>(params, "size", 256, 1, 1 << 20);
+    auto& memory = state.system.ApplicationMemory();
+    if (!memory.IsValidVirtualAddressRange(address, size)) {
+        throw std::runtime_error{fmt::format(
+            "range {:#x}..{:#x} is not mapped in application memory", address, address + size)};
+    }
+    std::vector<u8> bytes(static_cast<size_t>(size));
+    if (!memory.ReadBlock(address, bytes.data(), bytes.size())) {
+        throw std::runtime_error{"read failed: the range became unmapped"};
+    }
+    return {
+        {"address", address},
+        {"size", bytes.size()},
+        {"bytes_base64", Base64(bytes)},
+    };
+}
+
+json WriteGuestMemory(ToolState& state, const json& params) {
+    const u64 address = Param<u64>(params, "address", 0, 0, 0x7fff'ffff'ffff);
+    if (!params.value("confirm", false)) {
+        throw std::runtime_error{"writing guest memory needs \"confirm\": true"};
+    }
+    const std::vector<u8> bytes = DecodeBytes(params);
+    auto& memory = state.system.ApplicationMemory();
+    if (!memory.IsValidVirtualAddressRange(address, bytes.size())) {
+        throw std::runtime_error{fmt::format(
+            "range {:#x}..{:#x} is not mapped in application memory", address,
+            address + bytes.size())};
+    }
+    if (!memory.WriteBlock(address, bytes.data(), bytes.size())) {
+        throw std::runtime_error{"write failed: the range became unmapped"};
+    }
+    return {{"address", address}, {"written", bytes.size()}};
+}
+
+json ReadGpuMemory(ToolState& state, const json& params) {
+    const u64 address = Param<u64>(params, "address", 0, 0, 0xffff'ffff'ffff);
+    const int size = Param<int>(params, "size", 256, 1, 1 << 20);
+    const auto timeout = std::chrono::milliseconds{Param<int>(params, "timeout_ms", 5000, 100, 60000)};
+    VideoCore::Nx2Debug::MemoryAccess access{};
+    access.id = ++state.memory_id;
+    access.address = address;
+    access.size = static_cast<std::size_t>(size);
+    access.write = false;
+    if (!VideoCore::Nx2Debug::RequestMemoryAccess(access)) {
+        throw std::runtime_error{"another GPU memory access is pending; retry"};
+    }
+    const auto done = VideoCore::Nx2Debug::WaitMemoryAccess(access.id, timeout);
+    if (!done) {
+        throw std::runtime_error{
+            "no frame end arrived within the timeout; the rasterizer takes the access there"};
+    }
+    if (!done->error.empty()) {
+        throw std::runtime_error{done->error};
+    }
+    return {
+        {"address", address},
+        {"size", done->bytes.size()},
+        {"bytes_base64", Base64(done->bytes)},
+    };
+}
+
+json WriteGpuMemory(ToolState& state, const json& params) {
+    const u64 address = Param<u64>(params, "address", 0, 0, 0xffff'ffff'ffff);
+    if (!params.value("confirm", false)) {
+        throw std::runtime_error{"writing GPU memory needs \"confirm\": true"};
+    }
+    const std::vector<u8> bytes = DecodeBytes(params);
+    const auto timeout = std::chrono::milliseconds{Param<int>(params, "timeout_ms", 5000, 100, 60000)};
+    VideoCore::Nx2Debug::MemoryAccess access{};
+    access.id = ++state.memory_id;
+    access.address = address;
+    access.size = bytes.size();
+    access.write = true;
+    access.bytes = bytes;
+    if (!VideoCore::Nx2Debug::RequestMemoryAccess(access)) {
+        throw std::runtime_error{"another GPU memory access is pending; retry"};
+    }
+    const auto done = VideoCore::Nx2Debug::WaitMemoryAccess(access.id, timeout);
+    if (!done) {
+        throw std::runtime_error{
+            "no frame end arrived within the timeout; the rasterizer takes the access there"};
+    }
+    if (!done->error.empty()) {
+        throw std::runtime_error{done->error};
+    }
+    return {{"address", address}, {"written", done->size}};
+}
+
 json ScanShaders(ToolState& state, const json& params) {
     // Native Ampere programs end with this address map (see Shader::Ampere::NativeAddressMapMagic).
     constexpr u64 NativeAddressMapMagic = 0x50414d4e4544454eULL;
@@ -509,6 +638,10 @@ Handlers MakeHandlers(const std::shared_ptr<ToolState>& state) {
         {"capture_frame", handler(CaptureFrame)},
         {"reject_shaders", handler(RejectShaders)},
         {"scan_shaders", handler(ScanShaders)},
+        {"read_guest_memory", handler(ReadGuestMemory)},
+        {"write_guest_memory", handler(WriteGuestMemory)},
+        {"read_gpu_memory", handler(ReadGpuMemory)},
+        {"write_gpu_memory", handler(WriteGpuMemory)},
     };
 }
 

@@ -155,6 +155,64 @@ TOOLS = [
             },
         },
     },
+    {
+        "name": "read_guest_memory",
+        "description": "Reads application memory (CPU virtual addresses) and returns the bytes "
+                       "as base64. Fails on a range that is not fully mapped instead of returning "
+                       "guessed bytes.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "address": {"type": "integer", "minimum": 0},
+                "size": {"type": "integer", "minimum": 1, "maximum": 1048576},
+            },
+            "required": ["address"],
+        },
+    },
+    {
+        "name": "write_guest_memory",
+        "description": "Writes application memory. Requires confirm=true and a fully mapped "
+                       "range; returns how many bytes were written.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "address": {"type": "integer", "minimum": 0},
+                "bytes_base64": {"type": "string"},
+                "confirm": {"type": "boolean"},
+            },
+            "required": ["address", "bytes_base64", "confirm"],
+        },
+    },
+    {
+        "name": "read_gpu_memory",
+        "description": "Reads GPU memory (GPU virtual addresses) on the rasterizer thread, at a "
+                       "frame end, with the caches flushed, and returns the bytes as base64. "
+                       "Fails on a range that is not fully mapped.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "address": {"type": "integer", "minimum": 0},
+                "size": {"type": "integer", "minimum": 1, "maximum": 1048576},
+                "timeout_ms": {"type": "integer", "minimum": 100, "maximum": 60000},
+            },
+            "required": ["address"],
+        },
+    },
+    {
+        "name": "write_gpu_memory",
+        "description": "Writes GPU memory on the rasterizer thread, at a frame end, with the "
+                       "caches flushed. Requires confirm=true and a fully mapped range.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "address": {"type": "integer", "minimum": 0},
+                "bytes_base64": {"type": "string"},
+                "confirm": {"type": "boolean"},
+                "timeout_ms": {"type": "integer", "minimum": 100, "maximum": 60000},
+            },
+            "required": ["address", "bytes_base64", "confirm"],
+        },
+    },
 ]
 
 TOOL_NAMES = {tool["name"] for tool in TOOLS}

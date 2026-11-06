@@ -1823,6 +1823,19 @@ void RasterizerVulkan::TickFrame() {
             pipeline_cache.RefreshDebugRejections(change->unrejected);
             VideoCore::Nx2Debug::NoteRejectApplied(change->generation);
         }
+        if (auto access = VideoCore::Nx2Debug::TakeMemoryAccess()) {
+            if (!gpu_memory->IsFullyMappedRange(access->address, access->size)) {
+                access->error = fmt::format("range {:#x}..{:#x} is not fully mapped",
+                                            access->address,
+                                            access->address + access->size);
+            } else if (access->write) {
+                gpu_memory->WriteBlock(access->address, access->bytes.data(), access->size);
+            } else {
+                access->bytes.resize(access->size);
+                gpu_memory->ReadBlock(access->address, access->bytes.data(), access->size);
+            }
+            VideoCore::Nx2Debug::FinishMemoryAccess(std::move(*access));
+        }
     }
     frame_dump.TickFrame();
     ++render_trace_frame;

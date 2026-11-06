@@ -192,8 +192,7 @@ frame and summary lines, counts per entry kind, the first entries, and the `fram
 command. With `index: true`, the adapter runs that command itself. The adapter-only
 `capture_image {directory, name}` returns one pass PNG as image content.
 
-**`reject_shaders`** `{hashes?, reject?, timeout_s?}`. This is `EDEN_NX2_REJECT_HASH` at
-runtime: the same keys (native program key or shader hash) and the same effect. Pipeline
+**`reject_shaders`** `{hashes?, reject?, timeout_s?}`. This is `EDEN_NX2_REJECT_HASH` at runtime: the same keys (native program key or shader hash) and the same effect. Pipeline
 invalidation turned out to be tractable:
 
 1. The lowering checks the runtime list right after the env list
@@ -314,6 +313,19 @@ once (`EDEN_NX2_KEY_RECORD` already records keys in `eden-cli`) and replayed aft
 
 The adapter reconnects after the game restarts. A boot through a guest relaunch stops and starts
 the server again on the same port.
+
+## Memory access (phase 1.6.3)
+
+`read_guest_memory {address, size}` and `write_guest_memory {address, bytes_base64, confirm}`
+use `Core::Memory` directly: `IsValidVirtualAddressRange` first, so an unmapped range is an error
+rather than a guess, then `ReadBlock` or `WriteBlock`. Writes require `confirm: true`.
+
+`read_gpu_memory` and `write_gpu_memory` cannot run on the server thread safely: the caches
+`MemoryManager::ReadBlock` and `WriteBlock` flush belong to the rasterizer thread. They queue a
+`MemoryAccess` in `video_core/nx2_debug_control`, `RasterizerVulkan::TickFrame` takes it at the
+next frame end, checks `IsFullyMappedRange`, performs the access and publishes the result. The
+tool waits for it, so a call costs up to one frame. Only one access can be pending at a time. A
+read returns base64. Sizes are capped at 1 MiB.
 
 ## Phase 1 limits
 

@@ -546,7 +546,7 @@
         {
           "id": "1.6.3",
           "title": "Guest and GPU memory read/write",
-          "status": "pending",
+          "status": "in_progress",
           "goal": "Read and write application memory and GPU address spaces by address and size, through Core::Memory and Tegra::MemoryManager, with unmapped ranges reported instead of guessed. Reuse the mapped-page walker already added for scan_shaders.",
           "touches": [
             "src/core/memory.h",
@@ -566,7 +566,8 @@
           "complexity": "Medium",
           "agent": "mid_dev_agent",
           "created_at": "2026-11-06T00:00:00Z",
-          "updated_at": "2026-11-06T00:00:00Z"
+          "updated_at": "2026-11-06T00:00:00Z",
+          "changelog": "read/write guest and GPU memory implemented. Guest access goes through Core::Memory with a mapped-range check; GPU access is queued to the rasterizer thread at a frame end so the caches it flushes are its own. Writes need confirm. One new control-queue test; debug-server suite is 10 cases / 89 assertions."
         },
         {
           "id": "1.6.4",

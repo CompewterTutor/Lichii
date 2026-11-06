@@ -26,6 +26,8 @@ struct State {
     bool reject_pending{};
     bool unrejected{};
     bool open{};
+    std::optional<MemoryAccess> memory_pending;
+    std::optional<MemoryAccess> memory_finished;
 };
 
 State state;
@@ -33,7 +35,9 @@ std::atomic<bool> pending{};
 std::atomic<bool> any_rejected{};
 
 void UpdatePending() {
-    pending.store(!state.captures.empty() || state.reject_pending, std::memory_order_relaxed);
+    pending.store(!state.captures.empty() || state.reject_pending ||
+                      state.memory_pending.has_value(),
+                  std::memory_order_relaxed);
 }
 
 } // Anonymous namespace
@@ -46,6 +50,8 @@ void BeginSession() {
     state.reject_pending = false;
     state.unrejected = false;
     state.applied_generation = state.reject_generation;
+    state.memory_pending.reset();
+    state.memory_finished.reset();
     state.open = true;
     any_rejected.store(false, std::memory_order_relaxed);
     UpdatePending();
@@ -56,6 +62,7 @@ void EndSession() {
         std::scoped_lock lock{state.mutex};
         state.open = false;
         state.captures.clear();
+        state.memory_pending.reset();
         UpdatePending();
     }
     state.changed.notify_all();
@@ -178,6 +185,45 @@ bool WaitRejectApplied(u64 generation, std::chrono::milliseconds timeout) {
     return state.changed.wait_for(lock, timeout, [generation] {
         return !state.open || state.applied_generation >= generation;
     }) && state.applied_generation >= generation;
+}
+
+bool RequestMemoryAccess(MemoryAccess request) {
+    std::scoped_lock lock{state.mutex};
+    if (state.memory_pending.has_value()) {
+        return false;
+    }
+    state.memory_pending = std::move(request);
+    UpdatePending();
+    return true;
+}
+
+std::optional<MemoryAccess> WaitMemoryAccess(u64 id, std::chrono::milliseconds timeout) {
+    std::unique_lock lock{state.mutex};
+    state.changed.wait_for(lock, timeout, [id] {
+        return !state.open || (state.memory_finished && state.memory_finished->id == id);
+    });
+    if (!state.memory_finished || state.memory_finished->id != id) {
+        return std::nullopt;
+    }
+    std::optional<MemoryAccess> result = std::move(state.memory_finished);
+    state.memory_finished.reset();
+    return result;
+}
+
+std::optional<MemoryAccess> TakeMemoryAccess() {
+    std::scoped_lock lock{state.mutex};
+    std::optional<MemoryAccess> result = std::move(state.memory_pending);
+    state.memory_pending.reset();
+    UpdatePending();
+    return result;
+}
+
+void FinishMemoryAccess(MemoryAccess result) {
+    {
+        std::scoped_lock lock{state.mutex};
+        state.memory_finished = std::move(result);
+    }
+    state.changed.notify_all();
 }
 
 StepResult StepPresents(const std::function<u64()>& presents,

@@ -68,6 +68,29 @@ void NoteRejectApplied(u64 generation);
 /// Server thread: waits until the rasterizer applied the generation.
 [[nodiscard]] bool WaitRejectApplied(u64 generation, std::chrono::milliseconds timeout);
 
+/// One read or write of GPU memory, run on the rasterizer thread so the caches it flushes are
+/// the ones it owns.
+struct MemoryAccess {
+    u64 id{};
+    GPUVAddr address{};
+    std::size_t size{};
+    bool write{};
+    /// Input bytes for a write; filled with the bytes read for a read.
+    std::vector<u8> bytes;
+    /// Set by the rasterizer when the range is not fully mapped or the access failed.
+    std::string error;
+};
+
+/// Server thread: queues one access; only one can be pending at a time. Returns false when one is.
+[[nodiscard]] bool RequestMemoryAccess(MemoryAccess request);
+/// Server thread: waits for the access with this id. Empty on timeout or when the session ends.
+[[nodiscard]] std::optional<MemoryAccess> WaitMemoryAccess(u64 id,
+                                                           std::chrono::milliseconds timeout);
+/// Rasterizer thread: the pending access, once.
+[[nodiscard]] std::optional<MemoryAccess> TakeMemoryAccess();
+/// Rasterizer thread: publishes the result and wakes the waiter.
+void FinishMemoryAccess(MemoryAccess result);
+
 /// What a present-granular step did. The emulator is paused when this returns.
 struct StepResult {
     u64 before{};

@@ -169,6 +169,50 @@ TEST_CASE("Debug control counts reject generations", "[core][nx2_debug_server]")
     VideoCore::Nx2Debug::EndSession();
 }
 
+TEST_CASE("Debug control hands GPU memory accesses to the rasterizer once",
+          "[core][nx2_debug_server]") {
+    VideoCore::Nx2Debug::BeginSession();
+    VideoCore::Nx2Debug::MemoryAccess read{};
+    read.id = 11;
+    read.address = 0x1000;
+    read.size = 16;
+    REQUIRE(VideoCore::Nx2Debug::RequestMemoryAccess(read));
+    REQUIRE(VideoCore::Nx2Debug::HasRequests());
+    // Only one access may be pending: the rasterizer publishes one result at a time.
+    REQUIRE_FALSE(VideoCore::Nx2Debug::RequestMemoryAccess(read));
+    REQUIRE_FALSE(VideoCore::Nx2Debug::WaitMemoryAccess(11, 1ms));
+
+    const auto taken = VideoCore::Nx2Debug::TakeMemoryAccess();
+    REQUIRE(taken);
+    REQUIRE(taken->id == 11);
+    REQUIRE_FALSE(VideoCore::Nx2Debug::TakeMemoryAccess());
+    REQUIRE_FALSE(VideoCore::Nx2Debug::HasRequests());
+
+    VideoCore::Nx2Debug::MemoryAccess done = *taken;
+    done.bytes.assign(16, 0xab);
+    VideoCore::Nx2Debug::FinishMemoryAccess(std::move(done));
+    const auto result = VideoCore::Nx2Debug::WaitMemoryAccess(11, 10s);
+    REQUIRE(result);
+    REQUIRE(result->bytes.size() == 16);
+    REQUIRE(result->bytes.front() == 0xab);
+
+    // A write keeps its input bytes and can report an unmapped range.
+    VideoCore::Nx2Debug::MemoryAccess write{};
+    write.id = 12;
+    write.address = 0x2000;
+    write.size = 4;
+    write.write = true;
+    write.bytes = {1, 2, 3, 4};
+    write.error = "not mapped";
+    REQUIRE(VideoCore::Nx2Debug::RequestMemoryAccess(write));
+    REQUIRE(VideoCore::Nx2Debug::TakeMemoryAccess());
+    VideoCore::Nx2Debug::FinishMemoryAccess(write);
+    const auto failed = VideoCore::Nx2Debug::WaitMemoryAccess(12, 10s);
+    REQUIRE(failed);
+    REQUIRE(failed->error == "not mapped");
+    VideoCore::Nx2Debug::EndSession();
+}
+
 TEST_CASE("Debug control steps exactly the requested presents", "[core][nx2_debug_server]") {
     // Three presentations per poll, so the loop terminates without waiting on wall time. A real
     // presenter can overshoot by the frame that lands while the pause is arriving.
