@@ -5,7 +5,9 @@
 #include <atomic>
 #include <condition_variable>
 #include <deque>
+#include <functional>
 #include <mutex>
+#include <thread>
 #include <unordered_map>
 
 #include "video_core/nx2_debug_control.h"
@@ -176,6 +178,33 @@ bool WaitRejectApplied(u64 generation, std::chrono::milliseconds timeout) {
     return state.changed.wait_for(lock, timeout, [generation] {
         return !state.open || state.applied_generation >= generation;
     }) && state.applied_generation >= generation;
+}
+
+StepResult StepPresents(const std::function<u64()>& presents,
+                        const std::function<void(bool paused)>& set_paused,
+                        const std::atomic<bool>& stopping, u64 frames,
+                        std::chrono::milliseconds timeout) {
+    StepResult result{};
+    result.before = presents();
+    if (frames == 0) {
+        set_paused(true);
+        result.after = result.before;
+        return result;
+    }
+    const u64 target = result.before + frames;
+    set_paused(false);
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (presents() < target) {
+        if (stopping.load(std::memory_order_relaxed) ||
+            std::chrono::steady_clock::now() >= deadline) {
+            result.timed_out = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    }
+    set_paused(true);
+    result.after = presents();
+    return result;
 }
 
 } // namespace VideoCore::Nx2Debug

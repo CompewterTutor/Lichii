@@ -499,7 +499,7 @@
         {
           "id": "1.6.1",
           "title": "MCP control surface on the debug server",
-          "status": "pending",
+          "status": "in_progress",
           "goal": "Promote the existing loopback debug server from passive observation to MCP control: pause/resume, present-granular step, and a typed state snapshot. Keep it off unless EDEN_NX2_DEBUG_SERVER is set, loopback only, and one request at a time. Document the safety boundary: no file system access, no keys, no network.",
           "touches": [
             "src/core/debugger/nx2_debug_server.cpp",
@@ -516,7 +516,8 @@
           "complexity": "Medium",
           "agent": "mid_dev_agent",
           "created_at": "2026-11-06T00:00:00Z",
-          "updated_at": "2026-11-06T00:00:00Z"
+          "updated_at": "2026-11-06T23:24:44Z",
+          "changelog": "pause, resume and step are implemented and unit-tested (StepPresents + two tests, 9 debug-server cases pass). status already reports title, paused, presents and fps. Live check on OoT (pause, step 10, resume) still to run with a debug build."
         },
         {
           "id": "1.6.2",

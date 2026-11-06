@@ -35,6 +35,31 @@ TOOLS = [
         },
     },
     {
+        "name": "pause",
+        "description": "Pauses emulation (the same suspend the frontend uses). The next "
+                       "screenshot or capture then needs resume first.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "resume",
+        "description": "Resumes emulation after pause or step.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "step",
+        "description": "Runs until 'frames' (default 1) more frames have been presented, then "
+                       "pauses again. Returns the number actually advanced, the present count and "
+                       "timed_out. Prefer it over sleeping: it is bounded by presents, not wall "
+                       "time.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "frames": {"type": "integer", "minimum": 0, "maximum": 100000},
+                "timeout_ms": {"type": "integer", "minimum": 100, "maximum": 600000},
+            },
+        },
+    },
+    {
         "name": "screenshot",
         "description": "PNG of the next presented frame (16:9, default 720 lines). Fails when no "
                        "frame is presented within timeout_s (paused or loading).",
@@ -208,7 +233,11 @@ class Adapter:
             return self.capture_image(arguments)
         params = dict(arguments)
         index = params.pop("index", False)
-        timeout = max(int(params.get("timeout_s", 120 if name == "capture_frame" else 5)), 1) + 30
+        if name == "step":
+            # The request can be held for the whole step, so the socket must outlive it.
+            timeout = max(int(params.get("timeout_ms", 30000)) / 1000 + 30, 31)
+        else:
+            timeout = max(int(params.get("timeout_s", 120 if name == "capture_frame" else 5)), 1) + 30
         result = self.emulator.call(name, params, timeout)
         if name == "screenshot":
             png = result.pop("png_base64", None)

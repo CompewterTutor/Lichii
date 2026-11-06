@@ -132,7 +132,7 @@ server is on but idle, its thread sleeps in `epoll`/IOCP.
 | `log_tail`, `log_filter` | Relaunch with a new filter, owner sends the log | Read new lines since the last call, change the filter live | 1 |
 | `capture_frame` | Relaunch with `EDEN_NX2_FRAME_DUMP`, owner touches `capture.now`, agent copies the dump | Capture the next frame now, sampled inputs optional, get the manifest summary back; `capture_image` returns any pass PNG | 1 |
 | `reject_shaders` | Rebuild the env, relaunch, replay to the spot, once per bisection step | Reject or restore hashes live; bisection becomes a loop of reject, screenshot | 1 |
-| `pause`, `resume`, `step_frames` | Not possible | Freeze on the broken frame, capture it, step one present | 2 |
+| `pause`, `resume`, `step` | Not possible | Freeze on the broken frame, capture it, step one present (implemented in 1.6.1) | 1 |
 | `input` (buttons, sticks, timed sequences) | Owner plays to the spot | Agent walks to the spot itself and replays a repro | 2 |
 | `shaders` (inventory) | Shader dump and offline sweep | List loaded programs: key, hash, stage, address, lowered or rejected with the error | 2 |
 | `switches` (live `EDEN_NX2_*`) | Relaunch per switch | Toggle the observer switches live (classification below) | 2 |
@@ -148,6 +148,17 @@ server is on but idle, its thread sleeps in `epoll`/IOCP.
 `Common::g_build_fullname` and `g_scm_rev`, and `System::IsPaused`. It measures fps from
 `Core::g_nx2_present_count` (`src/core/core.cpp:78`) over a short window. It does not call
 `GetAndResetPerfStats`, which would reset the Qt status bar's counters.
+
+**`pause`**, **`resume`**, **`step`** `{frames?, timeout_ms?}`. They call the same
+`System::Pause` and `System::Run` the frontend uses, so a paused game is exactly the state the Qt
+window produces when it loses focus. A step has to be driven from the server thread: the present
+counter is bumped by the guest's own present call (`src/core/hle/service/nx2_gsv.h:1742`), and
+pausing from inside that call would suspend the thread that is running. So the server resumes,
+waits for the present count to reach its target, then pauses, reporting the frames it actually
+advanced and `timed_out`. A frame that presents while the pause is landing can push the count one
+past the target. Pause, resume and step take one mutex per session, so two clients cannot fight
+over the suspend state. `VideoCore::Nx2Debug::StepPresents` is a plain function over callbacks and
+is unit-tested without an emulator.
 
 **`screenshot`** `{height?, save?, timeout_s?}`. It requests a 16:9 layout from
 `Layout::DefaultFrameLayout`, and the renderer blits the presented framebuffers into it. The
@@ -211,13 +222,13 @@ environment plus a relaunch plus a replay.
 
 ### Phase 2: control and input (about 4 to 5 days)
 
-- **pause, resume, step_frames.** The core has `System::Pause` and `Run` (`src/core/core.cpp:279`).
-  The frontends own the run state, though: Qt's `EmuThread` decides when to call `Run`, so a
-  server that called `Pause` directly would desynchronise the UI. The frontend registers
-  pause and resume callbacks with the service, and Qt implements them with the same slot its
-  pause button uses. `step_frames {n}` resumes, waits until `g_nx2_present_count` advances by
-  `n`, then pauses. That is present-granular, not exact, because the GPU drains a frame or two
-  behind the CPU. Use a capture to get an exact frame.
+- **pause, resume, step.** Implemented in 1.6.1: the tools call `System::Pause` and `System::Run`
+  (`src/core/core.cpp:279`), the same suspend the frontend uses, and `step {frames}` resumes, waits
+  for `g_nx2_present_count` to reach its target, then pauses. It is present-granular: the present
+  counter is bumped on the guest's present call (`nx2_gsv.h:1742`), so a frame that lands while
+  the pause arrives can overshoot by one, and the result reports `advanced` and `timed_out`. A
+  frontend-registered callback is not needed because Qt's `EmuThread` already observes
+  `System::IsPaused`. Use a capture to get an exact frame.
 - **input.** Inject at `hid_core`'s `EmulatedController`
   (`src/hid_core/frontend/emulated_controller.h:505`, private `SetButton` and `SetStick`)
   with a debug overlay: injected buttons are ORed in, and an injected stick replaces the real one

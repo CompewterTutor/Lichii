@@ -168,3 +168,47 @@ TEST_CASE("Debug control counts reject generations", "[core][nx2_debug_server]")
     REQUIRE(VideoCore::Nx2Debug::TakeRejectChange()->unrejected);
     VideoCore::Nx2Debug::EndSession();
 }
+
+TEST_CASE("Debug control steps exactly the requested presents", "[core][nx2_debug_server]") {
+    // Three presentations per poll, so the loop terminates without waiting on wall time. A real
+    // presenter can overshoot by the frame that lands while the pause is arriving.
+    std::atomic<u64> presents{5};
+    std::atomic<bool> paused{true};
+    std::atomic<bool> stopping{false};
+    const auto run = [&](u64 frames) {
+        return VideoCore::Nx2Debug::StepPresents(
+            [&presents] { return presents.fetch_add(3); },
+            [&paused](bool value) { paused.store(value); },
+            stopping, frames, std::chrono::seconds{10});
+    };
+    const auto stepped = run(10);
+    REQUIRE(stepped.before == 5);
+    REQUIRE(stepped.after >= stepped.before + 10);
+    REQUIRE_FALSE(stepped.timed_out);
+    REQUIRE(paused.load());
+
+    // Zero frames just pauses.
+    const auto none = run(0);
+    REQUIRE(none.after == none.before);
+    REQUIRE_FALSE(none.timed_out);
+    REQUIRE(paused.load());
+}
+
+TEST_CASE("Debug control step stops when the session ends", "[core][nx2_debug_server]") {
+    std::atomic<u64> presents{0};
+    std::atomic<bool> stopping{false};
+    std::atomic<bool> paused{false};
+    std::thread stopper{[&] {
+        std::this_thread::sleep_for(20ms);
+        stopping.store(true);
+    }};
+    const auto begin = std::chrono::steady_clock::now();
+    const auto result = VideoCore::Nx2Debug::StepPresents(
+        [&presents] { return presents.load(); },
+        [&paused](bool value) { paused.store(value); },
+        stopping, 1000, std::chrono::seconds{30});
+    stopper.join();
+    REQUIRE(result.timed_out);
+    REQUIRE(paused.load());
+    REQUIRE(std::chrono::steady_clock::now() - begin < 10s);
+}

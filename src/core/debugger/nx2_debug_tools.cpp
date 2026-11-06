@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <mutex>
 #include <thread>
 
 #include "common/fs/path_util.h"
@@ -55,6 +56,9 @@ struct ToolState {
     u64 captures{};
     u64 screenshots{};
     std::atomic<bool> stopping{};
+    /// Serialises pause, resume and step between clients, so two of them cannot fight over the
+    /// emulator's suspend state.
+    std::mutex control_mutex;
 };
 
 namespace {
@@ -130,8 +134,54 @@ json Status(ToolState& state, const json& params) {
     };
 }
 
-json Screenshot(ToolState& state, const json& params) {
-    auto& renderer = state.system.GPU().Renderer();
+void RequireRunning(const ToolState& state) {
+    if (!state.system.IsPoweredOn()) {
+        throw std::runtime_error{"no game is running"};
+    }
+}
+
+u64 Presents() {
+    return g_nx2_present_count.load(std::memory_order_relaxed);
+}
+
+json Pause(ToolState& state, const json&) {
+    RequireRunning(state);
+    std::scoped_lock lock{state.control_mutex};
+    state.system.Pause();
+    return {{"paused", state.system.IsPaused()}, {"presents", Presents()}};
+}
+
+json Resume(ToolState& state, const json&) {
+    RequireRunning(state);
+    std::scoped_lock lock{state.control_mutex};
+    state.system.Run();
+    return {{"paused", state.system.IsPaused()}, {"presents", Presents()}};
+}
+
+json Step(ToolState& state, const json& params) {
+    RequireRunning(state);
+    const u64 frames = Param<u64>(params, "frames", 1, 0, 100000);
+    const auto timeout =
+        std::chrono::milliseconds{Param<int>(params, "timeout_ms", 30000, 100, 600000)};
+    std::scoped_lock lock{state.control_mutex};
+    const VideoCore::Nx2Debug::StepResult result = VideoCore::Nx2Debug::StepPresents(
+        Presents, [&state](bool paused) {
+            if (paused) {
+                state.system.Pause();
+            } else {
+                state.system.Run();
+            }
+        }, state.stopping, frames, timeout);
+    return {
+        {"requested", frames},
+        {"advanced", result.after - result.before},
+        {"presents", result.after},
+        {"paused", state.system.IsPaused()},
+        {"timed_out", result.timed_out},
+    };
+}
+
+json Screenshot(ToolState& state, const json& params) {    auto& renderer = state.system.GPU().Renderer();
     if (renderer.IsScreenshotPending()) {
         throw std::runtime_error{"a screenshot is already pending: no frame was presented since"};
     }
@@ -450,6 +500,9 @@ Handlers MakeHandlers(const std::shared_ptr<ToolState>& state) {
     };
     return {
         {"status", handler(Status)},
+        {"pause", handler(Pause)},
+        {"resume", handler(Resume)},
+        {"step", handler(Step)},
         {"screenshot", handler(Screenshot)},
         {"log_tail", handler(LogTail)},
         {"log_filter", handler(LogFilter)},

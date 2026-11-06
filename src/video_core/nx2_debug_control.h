@@ -3,8 +3,10 @@
 
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -55,8 +57,7 @@ void FinishCapture(u64 id, CaptureResult result);
 
 /// Server thread: adds or removes native program keys or shader hashes (as EDEN_NX2_REJECT_HASH
 /// takes them). Returns the generation to wait for.
-u64 SetRejected(std::span<const u64> hashes, bool rejected);
-[[nodiscard]] std::vector<u64> RejectedHashes();
+u64 SetRejected(std::span<const u64> hashes, bool rejected);[[nodiscard]] std::vector<u64> RejectedHashes();
 /// Lowering: whether the debug server rejects this program. Cheap while the list is empty.
 [[nodiscard]] bool IsRejected(u64 hash);
 [[nodiscard]] bool AnyRejected() noexcept;
@@ -66,5 +67,22 @@ u64 SetRejected(std::span<const u64> hashes, bool rejected);
 void NoteRejectApplied(u64 generation);
 /// Server thread: waits until the rasterizer applied the generation.
 [[nodiscard]] bool WaitRejectApplied(u64 generation, std::chrono::milliseconds timeout);
+
+/// What a present-granular step did. The emulator is paused when this returns.
+struct StepResult {
+    u64 before{};
+    u64 after{};
+    bool timed_out{};
+};
+
+/// Runs the emulator until `frames` presentations have happened, then pauses it again.
+///
+/// Stepping has to be driven from the server thread: the emulator's own present path runs on a
+/// guest thread, and pausing from there would suspend the thread that is calling. `set_paused`
+/// takes the same lock the frontend uses, so the EmuThread is never half-suspended.
+[[nodiscard]] StepResult StepPresents(const std::function<u64()>& presents,
+                                      const std::function<void(bool paused)>& set_paused,
+                                      const std::atomic<bool>& stopping, u64 frames,
+                                      std::chrono::milliseconds timeout);
 
 } // namespace VideoCore::Nx2Debug
