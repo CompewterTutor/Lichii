@@ -153,6 +153,21 @@ json Status(ToolState& state, const json& params) {
     const u64 after = g_nx2_present_count.load(std::memory_order_relaxed);
     const double seconds =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
+    json caches = nullptr;
+    if (auto* rasterizer = state.system.GPU().Renderer().ReadRasterizer()) {
+        if (const auto stats = rasterizer->GetDebugCacheStats()) {
+            caches = {
+                {"graphics_pipelines", stats->graphics},
+                {"compute_pipelines", stats->compute},
+                {"keylist_graphics", stats->keylist_graphics},
+                {"keylist_compute", stats->keylist_compute},
+                {"built", stats->built},
+                {"evicted", stats->evicted},
+                {"prefetched", stats->prefetched},
+                {"prefetch_failed", stats->prefetch_failed},
+            };
+        }
+    }
     return {
         {"title", state.title},
         {"program_id", fmt::format("{:016X}", state.program_id)},
@@ -169,6 +184,7 @@ json Status(ToolState& state, const json& params) {
         {"dump_dir", state.dump_directory.generic_string()},
         {"log_filter", state.log_filter},
         {"rejected", HexList(VideoCore::Nx2Debug::RejectedHashes())},
+        {"caches", caches},
     };
 }
 

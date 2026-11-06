@@ -28,7 +28,8 @@ TOOLS = [
         "name": "status",
         "description": "Game title, program id, build, renderer, paused state, presented frame "
                        "count and fps (measured over fps_window_ms), dump directory, live log "
-                       "filter and the shader hashes rejected at runtime.",
+                       "filter, the shader hashes rejected at runtime, and cache counters "
+                       "(pipelines, key list rows, built, evicted, prefetched).",
         "inputSchema": {
             "type": "object",
             "properties": {"fps_window_ms": {"type": "integer", "minimum": 0, "maximum": 5000}},

@@ -62,6 +62,8 @@ public:
 
     [[nodiscard]] size_t GraphicsCount() const;
 
+    [[nodiscard]] size_t ComputeCount() const;
+
 private:
     mutable std::mutex mutex;
     std::unordered_map<u64, PipelineListGraphicsKey> graphics;

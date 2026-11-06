@@ -18,6 +18,7 @@
 #include <string>
 #include <type_traits>
 #include "common/container/unordered_map.h"
+#include "video_core/rasterizer_interface.h"
 #include <vector>
 
 #include "common/common_types.h"
@@ -129,6 +130,9 @@ public:
 
     void TickFrame();
 
+    /// Read-only cache counters for the debug server; safe from another thread.
+    [[nodiscard]] VideoCore::RasterizerInterface::DebugCacheStats GetDebugStats();
+
     [[nodiscard]] ComputePipeline* CurrentComputePipeline();
 
     void LoadDiskResources(u64 title_id, std::stop_token stop_loading,
@@ -174,8 +178,7 @@ private:
 
     void QueueVulkanPipelineCacheFlush();
 
-    const Device& device;
-    Scheduler& scheduler;
+    const Device& device;    Scheduler& scheduler;
     DescriptorPool& descriptor_pool;
     GuestDescriptorQueue& guest_descriptor_queue;
     DescriptorBufferRing& descriptor_buffer_ring;
@@ -221,11 +224,14 @@ private:
     std::filesystem::path keylist_filename;
     bool keylist_loaded{};
     bool prefetch_enabled{};
-    std::mutex prefetch_mutex;
+    mutable std::mutex prefetch_mutex;
     std::vector<std::pair<GraphicsPipelineCacheKey, std::unique_ptr<GraphicsPipeline>>>
         prefetched_pipelines;
     std::unordered_set<u64> prefetch_pending;
     std::unordered_set<u64> prefetch_failed;
+    std::atomic<u64> stat_built{};
+    std::atomic<u64> stat_evicted{};
+    std::atomic<u64> stat_prefetched{};
 
     std::filesystem::path vulkan_pipeline_cache_filename;
     vk::PipelineCache vulkan_pipeline_cache;

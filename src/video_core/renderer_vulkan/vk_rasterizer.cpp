@@ -1814,8 +1814,11 @@ void RasterizerVulkan::FrameDumpPass(const Framebuffer* framebuffer) {
     }
 }
 
-void RasterizerVulkan::TickFrame() {
-    if (VideoCore::Nx2Debug::HasRequests()) {
+std::optional<VideoCore::RasterizerInterface::DebugCacheStats> RasterizerVulkan::GetDebugCacheStats() {
+    return pipeline_cache.GetDebugStats();
+}
+
+void RasterizerVulkan::TickFrame() {    if (VideoCore::Nx2Debug::HasRequests()) {
         if (auto capture = VideoCore::Nx2Debug::TakeCapture()) {
             frame_dump.Arm(std::move(capture->directory), capture->sampled, capture->id);
         }

@@ -1186,6 +1186,7 @@ void PipelineCache::EvictUnusedPipelines() {
     if (evicted == 0) {
         return;
     }
+    stat_evicted.fetch_add(evicted, std::memory_order_relaxed);
     for (auto& [key, pipeline] : graphics_cache) {
         if (pipeline) {
             pipeline->ClearTransitions();
@@ -1358,11 +1359,28 @@ void PipelineCache::DrainPrefetchedPipelines() {
         }
         pipeline->MarkUsed(frame_count);
         graphics_cache.emplace(key, std::move(pipeline));
+        stat_prefetched.fetch_add(1, std::memory_order_relaxed);
         ++added;
     }
     if (added != 0) {
         LOG_INFO(Render_Vulkan, "Prefetched {} listed pipelines", added);
     }
+}
+
+VideoCore::RasterizerInterface::DebugCacheStats PipelineCache::GetDebugStats() {
+    VideoCore::RasterizerInterface::DebugCacheStats stats{};
+    stats.graphics = graphics_cache.size();
+    stats.compute = compute_cache.size();
+    stats.keylist_graphics = keylist.GraphicsCount();
+    stats.keylist_compute = keylist.ComputeCount();
+    stats.built = stat_built.load(std::memory_order_relaxed);
+    stats.evicted = stat_evicted.load(std::memory_order_relaxed);
+    stats.prefetched = stat_prefetched.load(std::memory_order_relaxed);
+    {
+        std::scoped_lock lock{prefetch_mutex};
+        stats.prefetch_failed = prefetch_failed.size();
+    }
+    return stats;
 }
 
 GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) const noexcept {
@@ -1616,6 +1634,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline() {
     auto pipeline{
         CreateGraphicsPipeline(main_pools, graphics_key, environments.Span(), nullptr, true)};
     if (pipeline) {
+        stat_built.fetch_add(1, std::memory_order_relaxed);
         PipelineListGraphicsKey listed{};
         listed.unique_hashes = graphics_key.unique_hashes;
         listed.state = graphics_key.state;

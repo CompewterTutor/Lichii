@@ -45,6 +45,23 @@ using DiskResourceLoadCallback = std::function<void(LoadCallbackStage, std::size
 
 class RasterizerInterface {
 public:
+    /// Pipeline cache counters for the debug server. Queries are read-only and must not mutate
+    /// any emulator state.
+    struct DebugCacheStats {
+        std::size_t graphics{};
+        std::size_t compute{};
+        std::size_t keylist_graphics{};
+        std::size_t keylist_compute{};
+        u64 built{};
+        u64 evicted{};
+        u64 prefetched{};
+        std::size_t prefetch_failed{};
+    };
+
+    [[nodiscard]] virtual std::optional<DebugCacheStats> GetDebugCacheStats() {
+        return std::nullopt;
+    }
+
     virtual ~RasterizerInterface() = default;
 
     /// Dispatches a draw invocation

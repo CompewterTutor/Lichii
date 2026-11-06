@@ -572,7 +572,7 @@
         {
           "id": "1.6.4",
           "title": "CPU, GPU and cache state queries",
-          "status": "pending",
+          "status": "in_progress",
           "goal": "Expose the state an agent needs without a log round-trip: guest core register sets and thread states, active channel and GPU engine registers, pipeline and shader cache counts, frame pacing, and the existing profile zones. Extend the status tool rather than adding a second state path.",
           "touches": [
             "src/core/debugger/nx2_debug_tools.cpp",
@@ -592,7 +592,8 @@
           "complexity": "Medium",
           "agent": "mid_dev_agent",
           "created_at": "2026-11-06T00:00:00Z",
-          "updated_at": "2026-11-06T00:00:00Z"
+          "updated_at": "2026-11-06T00:00:00Z",
+          "changelog": "status now returns cache counters (graphics/compute pipelines, key-list rows, built, evicted, prefetched, prefetch_failed) through a read-only RasterizerInterface::GetDebugCacheStats, with atomics for the counters. Guest core registers and GPU engine registers remain: both need a stopped core or a rasterizer-thread request."
         },
         {
           "id": "1.6.5",

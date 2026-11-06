@@ -284,4 +284,9 @@ size_t PipelineKeyList::GraphicsCount() const {
     return graphics.size();
 }
 
+size_t PipelineKeyList::ComputeCount() const {
+    std::scoped_lock lock{mutex};
+    return compute.size();
+}
+
 } // namespace Vulkan

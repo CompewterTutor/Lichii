@@ -149,6 +149,14 @@ server is on but idle, its thread sleeps in `epoll`/IOCP.
 `Core::g_nx2_present_count` (`src/core/core.cpp:78`) over a short window. It does not call
 `GetAndResetPerfStats`, which would reset the Qt status bar's counters.
 
+**`status` state block.** Besides the boot and pacing fields, `status` carries a `caches` object
+from the rasterizer: current graphics and compute pipeline counts, key-list rows, and the
+`built`, `evicted`, `prefetched` and `prefetch_failed` counters. Counters are atomics updated where
+pipelines are created, evicted and drained, so the server thread reads them without touching the
+GPU thread's containers; `prefetch_failed` is read under its own mutex. `status` is read-only and
+never resets a counter, unlike `GetAndResetPerfStats`. Guest core registers are not exposed yet:
+reading a running core's context needs the same stop the GDB stub does.
+
 **`pause`**, **`resume`**, **`step`** `{frames?, timeout_ms?}`. They call the same
 `System::Pause` and `System::Run` the frontend uses, so a paused game is exactly the state the Qt
 window produces when it loses focus. A step has to be driven from the server thread: the present
