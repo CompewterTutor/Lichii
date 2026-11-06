@@ -23,6 +23,7 @@
 #include "core/debugger/nx2_debug_server.h"
 #include "core/debugger/nx2_debug_tools.h"
 #include "core/frontend/framebuffer_layout.h"
+#include "hid_core/debug_input.h"
 #include "core/memory.h"
 #include "video_core/gpu.h"
 #include "video_core/host1x/host1x.h"
@@ -61,6 +62,9 @@ struct ToolState {
     /// Serialises pause, resume and step between clients, so two of them cannot fight over the
     /// emulator's suspend state.
     std::mutex control_mutex;
+    /// Replays an injected input sequence, timed by presents. Joined when the service stops.
+    std::thread input_thread;
+    std::atomic<bool> input_stop{};
 };
 
 namespace {
@@ -234,6 +238,136 @@ json Step(ToolState& state, const json& params) {
         {"paused", state.system.IsPaused()},
         {"timed_out", result.timed_out},
     };
+}
+
+/// NpadButton bits by name, so a sequence reads like the controller.
+u64 ParseButtons(const json& value) {
+    static const std::map<std::string_view, u64, std::less<>> names{
+        {"a", 1ULL << 0},        {"b", 1ULL << 1},         {"x", 1ULL << 2},
+        {"y", 1ULL << 3},        {"stickl", 1ULL << 4},    {"stickr", 1ULL << 5},
+        {"l", 1ULL << 6},        {"r", 1ULL << 7},         {"zl", 1ULL << 8},
+        {"zr", 1ULL << 9},       {"plus", 1ULL << 10},     {"start", 1ULL << 10},
+        {"minus", 1ULL << 11},   {"select", 1ULL << 11},   {"left", 1ULL << 12},
+        {"up", 1ULL << 13},      {"right", 1ULL << 14},    {"down", 1ULL << 15},
+        {"dpadleft", 1ULL << 12}, {"dpadup", 1ULL << 13},  {"dpadright", 1ULL << 14},
+        {"dpaddown", 1ULL << 15}, {"sl", 1ULL << 24},      {"sr", 1ULL << 25},
+    };
+    if (value.is_number()) {
+        return value.get<u64>();
+    }
+    u64 buttons{};
+    for (const json& name : value.is_array() ? value : json::array({value})) {
+        const std::string text = name.is_string() ? name.get<std::string>() : std::string{};
+        std::string key;
+        for (const char character : text) {
+            if (character != '_' && character != '-' && character != ' ') {
+                key += static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+            }
+        }
+        const auto it = names.find(key);
+        if (it == names.end()) {
+            throw std::runtime_error{fmt::format("unknown button \"{}\"", text)};
+        }
+        buttons |= it->second;
+    }
+    return buttons;
+}
+
+/// One injected state: buttons plus optional stick positions in the -1..1 range.
+struct InjectedInput {
+    u64 buttons{};
+    bool has_sticks{};
+    s32 left_x{};
+    s32 left_y{};
+    s32 right_x{};
+    s32 right_y{};
+};
+
+InjectedInput ParseInput(const json& step) {
+    constexpr s32 MaxStick = 32767;
+    InjectedInput input{};
+    input.buttons = step.contains("buttons") ? ParseButtons(step.at("buttons")) : 0;
+    const auto stick = [&](const char* name, s32& x, s32& y) {
+        const json& value = step.at(name);
+        if (!value.is_array() || value.size() != 2) {
+            throw std::runtime_error{fmt::format("{} must be [x, y] in -1..1", name)};
+        }
+        const double raw_x = std::clamp(value[0].get<double>(), -1.0, 1.0);
+        const double raw_y = std::clamp(value[1].get<double>(), -1.0, 1.0);
+        x = static_cast<s32>(raw_x * MaxStick);
+        y = static_cast<s32>(raw_y * MaxStick);
+        input.has_sticks = true;
+    };
+    if (step.contains("left")) {
+        stick("left", input.left_x, input.left_y);
+    }
+    if (step.contains("right")) {
+        stick("right", input.right_x, input.right_y);
+    }
+    return input;
+}
+
+void ApplyInput(const InjectedInput& input) {
+    Core::HID::DebugInput::Set(input.buttons, input.left_x, input.left_y, input.right_x,
+                               input.right_y, input.has_sticks);
+}
+
+void StopInputThread(ToolState& state) {
+    state.input_stop.store(true, std::memory_order_relaxed);
+    if (state.input_thread.joinable()) {
+        state.input_thread.join();
+    }
+}
+
+json Input(ToolState& state, const json& params) {
+    std::scoped_lock lock{state.control_mutex};
+    StopInputThread(state);
+    if (params.value("clear", false)) {
+        Core::HID::DebugInput::Clear();
+        return {{"active", false}};
+    }
+    const InjectedInput input = ParseInput(params);
+    ApplyInput(input);
+    return {{"active", true},
+            {"buttons", Hex(input.buttons)},
+            {"sticks", input.has_sticks}};
+}
+
+json InputSequence(ToolState& state, const json& params) {
+    const json steps = params.value("steps", json::array());
+    if (!steps.is_array() || steps.empty()) {
+        throw std::runtime_error{"steps is a non-empty array of {frames, buttons, left, right}"};
+    }
+    for (const json& step : steps) {
+        if (!step.contains("frames")) {
+            throw std::runtime_error{"every step needs frames"};
+        }
+        ParseInput(step);
+    }
+    std::scoped_lock lock{state.control_mutex};
+    StopInputThread(state);
+    state.input_stop.store(false, std::memory_order_relaxed);
+    state.input_thread = std::thread{[&state, steps] {
+        for (const json& step : steps) {
+            if (state.input_stop.load(std::memory_order_relaxed) ||
+                state.stopping.load(std::memory_order_relaxed)) {
+                break;
+            }
+            ApplyInput(ParseInput(step));
+            const u64 frames = step.at("frames").get<u64>();
+            const u64 target = Presents() + frames;
+            while (Presents() < target && !state.input_stop.load(std::memory_order_relaxed) &&
+                   !state.stopping.load(std::memory_order_relaxed)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds{1});
+            }
+        }
+        Core::HID::DebugInput::Clear();
+    }};
+    u64 frames{};
+    for (const json& step : steps) {
+        frames += step.at("frames").get<u64>();
+    }
+    return {{"steps", steps.size()}, {"frames", frames}, {"note", "replaying, timed by presents"}};
 }
 
 json Screenshot(ToolState& state, const json& params) {    auto& renderer = state.system.GPU().Renderer();
@@ -682,6 +816,8 @@ Handlers MakeHandlers(const std::shared_ptr<ToolState>& state) {
         {"scan_shaders", handler(ScanShaders)},
         {"read_guest_memory", handler(ReadGuestMemory)},
         {"write_guest_memory", handler(WriteGuestMemory)},
+        {"input", handler(Input)},
+        {"input_sequence", handler(InputSequence)},
         {"read_gpu_memory", handler(ReadGpuMemory)},
         {"write_gpu_memory", handler(WriteGpuMemory)},
     };
@@ -722,6 +858,8 @@ Service::Service(System& system, std::string title, u64 program_id, const Endpoi
 
 Service::~Service() {
     state->stopping.store(true, std::memory_order_relaxed);
+    StopInputThread(*state);
+    Core::HID::DebugInput::Clear();
     VideoCore::Nx2Debug::EndSession();
     server.reset();
 }

@@ -162,6 +162,52 @@ TOOLS = [
         },
     },
     {
+        "name": "input",
+        "description": "Injects controller state, ORed over the player's mapping: buttons by "
+                       "name (a, b, x, y, l, r, zl, zr, plus, minus, up, down, left, right, "
+                       "stickl, stickr, sl, sr) and sticks as [x, y] in -1..1. Use clear=true to "
+                       "release control, which restores the physical controller immediately.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "buttons": {"type": ["array", "integer"], "items": {"type": "string"}},
+                "left": {"type": "array", "items": {"type": "number"}, "minItems": 2,
+                         "maxItems": 2},
+                "right": {"type": "array", "items": {"type": "number"}, "minItems": 2,
+                          "maxItems": 2},
+                "clear": {"type": "boolean"},
+            },
+        },
+    },
+    {
+        "name": "input_sequence",
+        "description": "Replays steps of {frames, buttons, left, right} timed by presented "
+                       "frames, not wall time, so a slow frame cannot shift the input. The last "
+                       "step clears the injected state. A later input call stops the sequence.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "steps": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "frames": {"type": "integer", "minimum": 1},
+                            "buttons": {"type": ["array", "integer"],
+                                        "items": {"type": "string"}},
+                            "left": {"type": "array", "items": {"type": "number"},
+                                     "minItems": 2, "maxItems": 2},
+                            "right": {"type": "array", "items": {"type": "number"},
+                                      "minItems": 2, "maxItems": 2},
+                        },
+                        "required": ["frames"],
+                    },
+                },
+            },
+            "required": ["steps"],
+        },
+    },
+    {
         "name": "read_guest_memory",
         "description": "Reads application memory (CPU virtual addresses) and returns the bytes "
                        "as base64. Fails on a range that is not fully mapped instead of returning "

@@ -325,6 +325,18 @@ once (`EDEN_NX2_KEY_RECORD` already records keys in `eden-cli`) and replayed aft
 The adapter reconnects after the game restarts. A boot through a guest relaunch stops and starts
 the server again on the same port.
 
+## Input injection (phase 1.6.2)
+
+`input {buttons?, left?, right?, clear?}` sets a debug overlay (`src/hid_core/debug_input.h`) that
+`EmulatedController::GetNpadButtons` ORs into the player's buttons and `GetSticks` substitutes the
+injected sticks into. Nothing is rebound: the physical controller keeps working, and `clear: true`
+makes the next read the player's own state again.
+
+`input_sequence {steps: [{frames, buttons, left, right}, ...]}` replays steps on a thread that is
+timed by `g_nx2_present_count`, not wall time, so a slow frame cannot shift the input. A later
+`input` call stops the replay, and the service stops it on shutdown. Frames are a minimum: a step
+that asks for a frame the game skips takes longer, exactly as a player's input would.
+
 ## Memory access (phase 1.6.3)
 
 `read_guest_memory {address, size}` and `write_guest_memory {address, bytes_base64, confirm}`

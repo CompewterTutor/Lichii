@@ -522,7 +522,7 @@
         {
           "id": "1.6.2",
           "title": "Gamepad and input injection over MCP",
-          "status": "pending",
+          "status": "in_progress",
           "goal": "Inject buttons and sticks through the emulated controller so an agent can walk to a scene, reproduce a bug, or cover an area for shader discovery without the owner playing. Timed by presents, not wall time, with a recorded sequence that can be replayed on a fresh boot.",
           "touches": [
             "src/hid_core/frontend/emulated_controller.h",
@@ -541,7 +541,8 @@
           "complexity": "High",
           "agent": "pro_dev_agent",
           "created_at": "2026-11-06T00:00:00Z",
-          "updated_at": "2026-11-06T00:00:00Z"
+          "updated_at": "2026-11-06T00:00:00Z",
+          "changelog": "input and input_sequence added. A debug overlay in hid_core is ORed over the player buttons and substitutes sticks in EmulatedController, so mapping and the physical controller stay intact; clear releases it. Sequences replay on a thread timed by presents and stop on shutdown or on a new input call."
         },
         {
           "id": "1.6.3",

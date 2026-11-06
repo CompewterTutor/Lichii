@@ -5,6 +5,8 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 add_library(hid_core STATIC
+    debug_input.cpp
+    debug_input.h
     resources/six_axis/sensor_info.h
     frontend/emulated_console.cpp
     frontend/emulated_console.h

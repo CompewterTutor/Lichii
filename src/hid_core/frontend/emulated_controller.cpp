@@ -11,6 +11,7 @@
 #include <ranges>
 #include "common/thread.h"
 #include "common/assert.h"
+#include "hid_core/debug_input.h"
 #include "hid_core/frontend/emulated_controller.h"
 #include "hid_core/frontend/input_converter.h"
 #include "hid_core/hid_util.h"
@@ -1807,7 +1808,9 @@ CaptureButtonState EmulatedController::GetCaptureButtons() const {
 NpadButtonState EmulatedController::GetNpadButtons() const {
     if (is_configuring)
         return {};
-    return {controller.npad_button_state.raw & GetTurboButtonMask()};
+    const u64 raw = static_cast<u64>(controller.npad_button_state.raw) &
+                    static_cast<u64>(GetTurboButtonMask());
+    return {static_cast<NpadButton>(raw | DebugInput::Buttons())};
 }
 
 DebugPadButton EmulatedController::GetDebugPadButtons() const {
@@ -1819,7 +1822,13 @@ DebugPadButton EmulatedController::GetDebugPadButtons() const {
 AnalogSticks EmulatedController::GetSticks() const {
     if (is_configuring)
         return {};
-    return controller.analog_stick_state;
+    AnalogSticks sticks = controller.analog_stick_state;
+    if (s32 left_x, left_y, right_x, right_y;
+        DebugInput::Sticks(left_x, left_y, right_x, right_y)) {
+        sticks.left = {.x = left_x, .y = left_y};
+        sticks.right = {.x = right_x, .y = right_y};
+    }
+    return sticks;
 }
 
 NpadGcTriggerState EmulatedController::GetTriggers() const {
