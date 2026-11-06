@@ -168,7 +168,10 @@ past the target. Pause, resume and step take one mutex per session, so two clien
 over the suspend state. `VideoCore::Nx2Debug::StepPresents` is a plain function over callbacks and
 is unit-tested without an emulator.
 
-**`screenshot`** `{height?, save?, timeout_s?}`. It requests a 16:9 layout from
+**`screenshot`** `{height?, save?, timeout_s?, reject?, reject_timeout_s?}`. With `reject`, the
+listed shader hashes are rejected for this capture only and restored afterwards, so two calls with
+the same frame and different hash lists are an A/B image pair; the result echoes them under
+`overrides`. The rejection takes effect at the frame end that precedes the captured frame. It requests a 16:9 layout from
 `Layout::DefaultFrameLayout`, and the renderer blits the presented framebuffers into it. The
 BGRA result is turned into RGB and encoded as PNG with stb, which `common` already compiles. The
 pixel buffer is owned by the completion callback, so a request that times out cannot leave the

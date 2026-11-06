@@ -70,6 +70,11 @@ TOOLS = [
                 "height": {"type": "integer", "minimum": 144, "maximum": 2160},
                 "save": {"type": "boolean", "description": "Also write it into the dump directory."},
                 "timeout_s": {"type": "integer", "minimum": 1, "maximum": 30},
+                "reject": {"type": "array", "items": {"type": "string"},
+                           "description": "Shader hashes (16 hex digits) to reject for this "
+                                          "capture only; restored afterwards. The result echoes "
+                                          "them under overrides."},
+                "reject_timeout_s": {"type": "integer", "minimum": 0, "maximum": 60},
             },
         },
     },

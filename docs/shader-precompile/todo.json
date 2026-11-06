@@ -624,7 +624,7 @@
         {
           "id": "1.6.6",
           "title": "Configurable screenshot with shader and render toggles",
-          "status": "pending",
+          "status": "in_progress",
           "goal": "Extend the screenshot tool so an agent can compare images under controlled changes in one call: shader toggles (reject or isolate a shader, show only one stage, skip post-processing or upscaling), render overrides (resolution, sRGB/linear output, alpha), and a frame or pass selector. Return the PNG plus the state that produced it so two images are comparable.",
           "touches": [
             "src/core/debugger/nx2_debug_tools.cpp",
@@ -645,7 +645,8 @@
           "complexity": "Medium",
           "agent": "mid_dev_agent",
           "created_at": "2026-11-06T00:00:00Z",
-          "updated_at": "2026-11-06T00:00:00Z"
+          "updated_at": "2026-11-06T00:00:00Z",
+          "changelog": "screenshot takes a reject list: the hashes are rejected for the capture only and restored afterwards, so two calls give an A/B pair. The result echoes the active overrides. Render overrides (resolution, sRGB, alpha, pass selection) and stage isolation remain."
         }
       ]
     }

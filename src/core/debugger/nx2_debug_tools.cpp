@@ -16,6 +16,7 @@
 #include "common/fs/path_util.h"
 #include "common/logging.h"
 #include "common/scm_rev.h"
+#include "common/scope_exit.h"
 #include "common/settings.h"
 #include "common/stb.h"
 #include "core/core.h"
@@ -239,6 +240,28 @@ json Screenshot(ToolState& state, const json& params) {    auto& renderer = stat
     if (renderer.IsScreenshotPending()) {
         throw std::runtime_error{"a screenshot is already pending: no frame was presented since"};
     }
+    // Shader toggles for an A/B image: reject these programs only for this capture, then restore
+    // the previous set, so two screenshots differ by exactly the listed shaders.
+    std::vector<u64> rejected;
+    for (const json& hash : params.value("reject", json::array())) {
+        rejected.push_back(ParseShaderHash(hash.get<std::string>()));
+    }
+    if (!rejected.empty() && !IsVulkan()) {
+        throw std::runtime_error{"a shader toggle needs the Vulkan renderer"};
+    }
+    const auto reject_timeout = std::chrono::seconds{Param<int>(params, "reject_timeout_s", 5, 0, 60)};
+    const auto apply_rejects = [&](bool reject) {
+        if (rejected.empty()) {
+            return true;
+        }
+        const u64 generation = VideoCore::Nx2Debug::SetRejected(rejected, reject);
+        return VideoCore::Nx2Debug::WaitRejectApplied(generation, reject_timeout);
+    };
+    apply_rejects(true);
+    SCOPE_EXIT {
+        apply_rejects(false);
+    };
+
     const u32 height = Param<u32>(params, "height", 720, 144, 2160);
     const auto layout = Layout::DefaultFrameLayout(height * 16 / 9, height);
     const auto pixels = std::make_shared<std::vector<u8>>(size_t{layout.width} * layout.height * 4);
@@ -269,6 +292,9 @@ json Screenshot(ToolState& state, const json& params) {    auto& renderer = stat
         throw std::runtime_error{"PNG encoding failed"};
     }
     json result = {{"width", layout.width}, {"height", layout.height}};
+    if (!rejected.empty()) {
+        result["overrides"] = {{"rejected", HexList(rejected)}};
+    }
     if (params.value("save", false)) {
         std::filesystem::create_directories(state.dump_directory);
         const auto path =
