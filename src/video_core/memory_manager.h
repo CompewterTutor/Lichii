@@ -7,6 +7,7 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -177,6 +178,17 @@ public:
 
     const u8* GetSpan(const GPUVAddr src_addr, const std::size_t size) const;
     u8* GetSpan(const GPUVAddr src_addr, const std::size_t size);
+
+    /// Debug helper: visits every mapped 4 KiB page as (guest address, host bytes). Big pages are
+    /// not included; program code and heap allocations use small pages.
+    void VisitMappedPages(const std::function<void(GPUVAddr, const u8*, std::size_t)>& visitor);
+
+    /// Debug helper: every live GPU address space. A Switch 2 title maps through the manager its
+    /// nvhost_as_gpu session created, not necessarily Host1x's default one.
+    [[nodiscard]] static std::vector<MemoryManager*> Instances();
+    [[nodiscard]] GPUVAddr AddressSpaceSize() const noexcept {
+        return address_space_size;
+    }
 
 private:
     template <typename FuncMapped, typename FuncReserved, typename FuncUnmapped>

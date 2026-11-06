@@ -1,10 +1,12 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
 #include <atomic>
 #include <charconv>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -19,7 +21,10 @@
 #include "core/debugger/nx2_debug_server.h"
 #include "core/debugger/nx2_debug_tools.h"
 #include "core/frontend/framebuffer_layout.h"
+#include "core/memory.h"
 #include "video_core/gpu.h"
+#include "video_core/host1x/host1x.h"
+#include "video_core/memory_manager.h"
 #include "video_core/nx2_debug_control.h"
 #include "video_core/renderer_base.h"
 
@@ -295,6 +300,150 @@ json RejectShaders(ToolState&, const json& params) {
     return result;
 }
 
+json ScanShaders(ToolState& state, const json& params) {
+    // Native Ampere programs end with this address map (see Shader::Ampere::NativeAddressMapMagic).
+    constexpr u64 NativeAddressMapMagic = 0x50414d4e4544454eULL;
+    constexpr u64 PageSize = 4096;
+    const int max_hits = Param<int>(params, "max_hits", 512, 1, 100000);
+    const u64 before_bytes = static_cast<u64>(Param<int>(params, "before_kb", 512, 0, 16384)) * 1024;
+    const u64 after_bytes = static_cast<u64>(Param<int>(params, "after_kb", 64, 0, 16384)) * 1024;
+    u64 magic = NativeAddressMapMagic;
+    int width = 8;
+    if (const std::string text = params.value("magic", std::string{}); !text.empty()) {
+        const std::string digits = text.starts_with("0x") ? text.substr(2) : text;
+        const auto [end, error] =
+            std::from_chars(digits.data(), digits.data() + digits.size(), magic, 16);
+        if (error != std::errc{} || end != digits.data() + digits.size() || width < 1) {
+            throw std::runtime_error{"magic must be a hex value"};
+        }
+        width = Param<int>(params, "width", 4, 1, 8);
+    }
+
+    struct Hit {
+        int source{}; // 0 = GPU address space, 1 = application memory
+        void* owner{};
+        GPUVAddr address{};
+        bool operator<(const Hit& rhs) const noexcept {
+            return address < rhs.address;
+        }
+        bool operator==(const Hit& rhs) const noexcept {
+            return source == rhs.source && owner == rhs.owner && address == rhs.address;
+        }
+    };
+    std::vector<Hit> hits;
+    size_t pages{};
+    size_t instances{};
+    bool full = false;
+    const auto scan = [&](int source, void* owner, GPUVAddr addr, const u8* data,
+                          std::size_t size) {
+        ++pages;
+        if (full) {
+            return;
+        }
+        for (std::size_t offset = 0; offset + width <= size; offset += width) {
+            u64 value{};
+            std::memcpy(&value, data + offset, width);
+            if (value == magic) {
+                hits.push_back({source, owner, addr + offset});
+            }
+            if (hits.size() >= static_cast<std::size_t>(max_hits)) {
+                full = true;
+                return;
+            }
+        }
+    };
+    for (Tegra::MemoryManager* manager : Tegra::MemoryManager::Instances()) {
+        ++instances;
+        if (manager != nullptr) {
+            manager->VisitMappedPages([&, manager](GPUVAddr addr, const u8* data,
+                                                   std::size_t size) {
+                scan(0, manager, addr, data, size);
+            });
+        }
+    }
+    auto& application_memory = state.system.ApplicationMemory();
+    application_memory.VisitMappedPages(
+        [&](VAddr addr, const u8* data, std::size_t size) {
+            scan(1, &application_memory, addr, data, size);
+        });
+    std::sort(hits.begin(), hits.end(),
+              [](const Hit& lhs, const Hit& rhs) { return lhs.address < rhs.address; });
+    hits.erase(std::unique(hits.begin(), hits.end(),
+                           [](const Hit& lhs, const Hit& rhs) {
+                               return lhs.source == rhs.source && lhs.owner == rhs.owner &&
+                                      lhs.address == rhs.address;
+                           }),
+               hits.end());
+
+    const auto read_page = [](const Hit& hit, u64 page, u8* out) -> bool {
+        if (hit.source == 0) {
+            auto* manager = static_cast<Tegra::MemoryManager*>(hit.owner);
+            if (manager == nullptr || !manager->IsFullyMappedRange(page, PageSize)) {
+                return false;
+            }
+            const u8* const data = manager->GetSpan(page, PageSize);
+            if (data == nullptr) {
+                return false;
+            }
+            std::memcpy(out, data, PageSize);
+            return true;
+        }
+        auto* memory = static_cast<Core::Memory::Memory*>(hit.owner);
+        const u8* const data = memory != nullptr ? memory->GetSpan(page, PageSize) : nullptr;
+        if (data == nullptr) {
+            return false;
+        }
+        std::memcpy(out, data, PageSize);
+        return true;
+    };
+
+    const auto directory =
+        state.dump_directory / fmt::format("shader-scan-{}", state.session);
+    std::filesystem::create_directories(directory);
+    std::ofstream manifest{directory / "manifest.jsonl", std::ios::app};
+    std::vector<std::pair<u64, u64>> covered;
+    size_t dumped{};
+    u64 bytes{};
+    for (const Hit& hit : hits) {
+        const u64 start = (hit.address > before_bytes ? hit.address - before_bytes : 0) &
+                          ~(PageSize - 1);
+        const u64 end = (hit.address + after_bytes + PageSize - 1) & ~(PageSize - 1);
+        const bool already = std::ranges::any_of(covered, [start, end](const auto& range) {
+            return start >= range.first && end <= range.second;
+        });
+        if (already) {
+            continue;
+        }
+        covered.emplace_back(start, end);
+        std::vector<u8> window(end - start, 0);
+        for (u64 page = start; page < end; page += PageSize) {
+            read_page(hit, page, window.data() + (page - start));
+        }
+        const auto file = directory / fmt::format("region-{:012x}.bin", start);
+        std::ofstream stream{file, std::ios::binary};
+        stream.write(reinterpret_cast<const char*>(window.data()),
+                     static_cast<std::streamsize>(window.size()));
+        if (!stream) {
+            continue;
+        }
+        ++dumped;
+        bytes += window.size();
+        manifest << fmt::format(
+                        "{{\"hit\":\"0x{:x}\",\"start\":\"0x{:x}\",\"size\":{},\"file\":\"{}\"}}\n",
+                        hit.address, start, window.size(), file.filename().string());
+        manifest.flush();
+    }
+    return {
+        {"hits", hits.size()},
+        {"pages", pages},
+        {"instances", instances},
+        {"regions", dumped},
+        {"bytes", bytes},
+        {"directory", directory.generic_string()},
+        {"note", "windows end after the address map; find the program base offline"},
+    };
+}
+
 Handlers MakeHandlers(const std::shared_ptr<ToolState>& state) {
     const auto handler = [&state](json (*tool)(ToolState&, const json&)) -> Handler {
         return [state, tool](const json& params) { return tool(*state, params); };
@@ -306,6 +455,7 @@ Handlers MakeHandlers(const std::shared_ptr<ToolState>& state) {
         {"log_filter", handler(LogFilter)},
         {"capture_frame", handler(CaptureFrame)},
         {"reject_shaders", handler(RejectShaders)},
+        {"scan_shaders", handler(ScanShaders)},
     };
 }
 

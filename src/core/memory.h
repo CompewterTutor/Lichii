@@ -7,6 +7,7 @@
 #pragma once
 
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -378,6 +379,9 @@ public:
 
     const u8* GetSpan(const VAddr src_addr, const std::size_t size) const;
     u8* GetSpan(const VAddr src_addr, const std::size_t size);
+
+    /// Debug helper: visits every mapped page of the current process' address space.
+    void VisitMappedPages(const std::function<void(VAddr, const u8*, std::size_t)>& visitor);
 
     /**
      * Writes a range of bytes into the current process' address space at the specified

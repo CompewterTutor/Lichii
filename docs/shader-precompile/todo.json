@@ -1,0 +1,647 @@
+{
+  "schema_version": "1.0.0",
+  "project": {
+    "name": "Lichii shader precompilation",
+    "version": {
+      "milestone": "v1",
+      "release_version": "0.1.0",
+      "next_milestone": "none"
+    },
+    "description": "Stop mid-game pipeline compilation stalls by porting switch2mac's shared pipeline key list to Lichii: a per-title, identifiers-only list of shader content hashes and fixed pipeline state, recorded during play, shareable between players, and used to build matching pipelines on background workers before the game asks for them. Includes the eviction and boot-load policy fixes the OoT profile showed are needed, and static shader discovery as the enabler for prebuilding content a player has not reached yet."
+  },
+  "agent_config": {
+    "tiers": {
+      "basic_dev_agent": {
+        "complexity_range": "Low",
+        "duration_minutes": "5-15"
+      },
+      "mid_dev_agent": {
+        "complexity_range": "Medium",
+        "duration_minutes": "15-45"
+      },
+      "pro_dev_agent": {
+        "complexity_range": "High-Very High",
+        "duration_minutes": "45-120+"
+      }
+    },
+    "required_reading": [
+      "AGENTS.md",
+      "docs/Coding.md",
+      "docs/shader-precompile/learnings.md",
+      "src/video_core/renderer_vulkan/vk_pipeline_cache.cpp",
+      "src/video_core/shader_environment.h"
+    ]
+  },
+  "meta": {
+    "origin": "OoT pipeline profile of 2026-11-06 plus the azmasm/switch2mac survey.",
+    "measured": "OoT session 2: 1059 pipelines preloaded, 1188 built at run time, 1206 evicted, 931 evicted in one check at 169 s, 612 built in 10 s at 352 s, frames of 923/1041/1235 ms. 176 of 267 storm builds had already been built in session 1.",
+    "legal": "A shared list may contain shader content hashes and register state only. Never commit game shaders, SPIR-V, serialized environments, vulkan.bin, or driver blobs.",
+    "naming": "The on-disk list is keylist.bin next to vulkan.fork-v<N>.bin under %APPDATA%/eden/cache/shader/<title>/."
+  },
+  "phases": [
+    {
+      "id": "1.0",
+      "title": "Reconnaissance and baseline",
+      "goal": "Know what switch2mac actually shares, what Lichii's pipeline cache already does, and what the OoT stutter consists of. No production changes.",
+      "tasks": [
+        {
+          "id": "1.0.1",
+          "title": "Profile OoT pipeline builds and evictions from real sessions",
+          "status": "done",
+          "goal": "Read two OoT sessions' logs and separate genuinely new pipelines from rebuilds of evicted ones. Record boot counts, eviction totals, storm windows, frame spikes, and unique shader counts.",
+          "touches": [
+            "docs/shader-precompile/learnings.md"
+          ],
+          "success": [
+            "Numbers recorded for boot preload, run-time builds, evictions and frame spikes",
+            "Known-rebuild share of a storm window measured",
+            "Cause separated into eviction churn versus new content"
+          ],
+          "tests": "Cross-check the per-10s ReportRuntimePipeline sums against the logged per-build lines.",
+          "complexity": "Medium",
+          "agent": "mid_dev_agent",
+          "changelog": "OoT profile recorded: 1188 run-time builds and 1206 evictions in 11 minutes, 931 evicted in one check",
+          "created_at": "2026-11-06T00:00:00Z",
+          "updated_at": "2026-11-06T00:00:00Z"
+        },
+        {
+          "id": "1.0.2",
+          "title": "Survey switch2mac's shared shader list",
+          "status": "done",
+          "goal": "Read the switch2mac README, shader_list tooling and game pages. Establish what a row contains, how rows are collected and merged, how a game build uses them, and the cost limits.",
+          "touches": [
+            "docs/shader-precompile/learnings.md"
+          ],
+          "success": [
+            "Row semantics, contribution flow and privacy rule written down",
+            "Dependence on locally locatable shader code identified",
+            "Build-time cost examples recorded"
+          ],
+          "complexity": "Low",
+          "agent": "basic_dev_agent",
+          "changelog": "switch2mac shared shader list surveyed and documented",
+          "created_at": "2026-11-06T00:00:00Z",
+          "updated_at": "2026-11-06T00:00:00Z"
+        },
+        {
+          "id": "1.0.3",
+          "title": "Enable the pipeline-diff diagnostic for one OoT session",
+          "status": "pending",
+          "goal": "Run OoT with EDEN_NX2_PIPELINE_DIFF=1 and count how many new keys share a shader set with an earlier key, and which fixed-state fields split them. This sizes the value of state-variant prefetch for OoT.",
+          "touches": [
+            "docs/shader-precompile/learnings.md"
+          ],
+          "success": [
+            "Count of distinct shader sets versus keys recorded",
+            "Most common differing state fields listed",
+            "Decision recorded on whether sibling prefetch is worth shipping for OoT"
+          ],
+          "tests": "Set EDEN_NX2_PIPELINE_DIFF=1, launch OoT with EDEN_NX2_DEBUG_SERVER=127.0.0.1:6565, play 5 minutes, count 'differs in' lines.",
+          "complexity": "Low",
+          "agent": "basic_dev_agent",
+          "created_at": "2026-11-06T00:00:00Z",
+          "updated_at": "2026-11-06T00:00:00Z"
+        }
+      ]
+    },
+    {
+      "id": "1.1",
+      "title": "Per-title pipeline key list",
+      "goal": "A version-stable keylist.bin per title: record every built key, load shared rows, and build listed state variants on background workers as soon as their shader set is resident.",
+      "prerequisites": [
+        "1.0"
+      ],
+      "tasks": [
+        {
+          "id": "1.1.1",
+          "title": "Design the key list format and prefetch rules",
+          "status": "done",
+          "goal": "Choose a binary row format (kind, key hash, shader hashes, fixed state), a normalization rule for driver id/version, dedupe by key hash, and the only safe prefetch trigger: one exact shader set already resident, with a serialized environment snapshot.",
+          "touches": [
+            "docs/shader-precompile/learnings.md"
+          ],
+          "success": [
+            "Format documented and versioned",
+            "Driver fields and feature-set handling decided",
+            "Thread ownership decided: builds on workers, insertion into the pipeline map on the GPU thread at TickFrame"
+          ],
+          "complexity": "Medium",
+          "agent": "mid_dev_agent",
+          "changelog": "Key list format and prefetch rules designed",
+          "created_at": "2026-11-06T00:00:00Z",
+          "updated_at": "2026-11-06T00:00:00Z"
+        },
+        {
+          "id": "1.1.2",
+          "title": "Add the PipelineKeyList module",
+          "status": "done",
+          "goal": "Add src/video_core/renderer_vulkan/vk_pipeline_keylist.{h,cpp}: verified load, deterministic save, record for graphics and compute keys, shader-set index, Siblings lookup, Contains, and an EDEN_NX2_KEYLIST=0 switch. No pipeline code uses it yet.",
+          "touches": [
+            "src/video_core/renderer_vulkan/vk_pipeline_keylist.h",
+            "src/video_core/renderer_vulkan/vk_pipeline_keylist.cpp",
+            "src/video_core/CMakeLists.txt"
+          ],
+          "success": [
+            "Round-trip of a written file reproduces every key",
+            "Corrupt or foreign rows are dropped without touching existing rows",
+            "Driver id and version are cleared in stored rows and key hashes are stable across them"
+          ],
+          "tests": "New unit test in src/tests/video_core writes two graphics keys and one compute key, reloads them, compares fields, then corrupts bytes and expects a clean load.",
+          "prerequisites": [
+            "1.1.1"
+          ],
+          "complexity": "Medium",
+          "agent": "mid_dev_agent",
+          "created_at": "2026-11-06T00:00:00Z",
+          "updated_at": "2026-11-06T16:30:00Z"
+        },
+        {
+          "id": "1.1.3",
+          "title": "Record every built pipeline into the list",
+          "status": "done",
+          "goal": "Record keys from the boot disk-cache loader, the runtime graphics slow path and the runtime compute path. Save the merged list next to the versioned pipeline cache at shutdown. Do not change what is built.",
+          "touches": [
+            "src/video_core/renderer_vulkan/vk_pipeline_cache.cpp",
+            "src/video_core/renderer_vulkan/vk_pipeline_cache.h"
+          ],
+          "success": [
+            "A first run over an existing cache writes about 1000 rows for OoT",
+            "Second run loads the same row count",
+            "Saving is done off the GPU thread"
+          ],
+          "tests": "Run OoT for a minute, count rows in keylist.bin, restart, confirm the load count logged and pipeline count at boot is unchanged.",
+          "prerequisites": [
+            "1.1.2"
+          ],
+          "complexity": "Medium",
+          "agent": "mid_dev_agent",
+          "created_at": "2026-11-06T00:00:00Z",
+          "updated_at": "2026-11-06T16:30:00Z"
+        },
+        {
+          "id": "1.1.4",
+          "title": "Snapshot environments and prefetch listed state variants",
+          "status": "done",
+          "goal": "When a first-time graphics key is built, ask the list for other keys with the same six shader hashes. If any are missing, serialize the already-captured environments into a buffer and queue one worker job that deserializes them and builds each missing key with the existing CreateGraphicsPipeline path. Hand results to the GPU thread at TickFrame; never mutate the pipeline map from a worker.",
+          "touches": [
+            "src/video_core/renderer_vulkan/vk_pipeline_cache.cpp",
+            "src/video_core/renderer_vulkan/vk_pipeline_cache.h",
+            "src/video_core/shader_environment.h",
+            "src/video_core/shader_environment.cpp"
+          ],
+          "success": [
+            "Prefetched siblings are inserted at TickFrame and used by the draw that needs them",
+            "No build reads live Maxwell registers off the GPU thread",
+            "Per-trigger and pending caps prevent a prefetch storm",
+            "Task and mesh programs are skipped and failures are not retried",
+            "EDEN_NX2_KEYLIST_PREFETCH=0 disables it"
+          ],
+          "tests": "Inject a sibling state into a key list, run OoT, confirm the sibling is built on a worker and the frame that first uses it does not stall.",
+          "prerequisites": [
+            "1.1.3"
+          ],
+          "complexity": "High",
+          "agent": "pro_dev_agent",
+          "created_at": "2026-11-06T00:00:00Z",
+          "updated_at": "2026-11-06T16:30:00Z",
+          "changelog": "Key list prefetch builds listed state variants on workers from an environment snapshot"
+        },
+        {
+          "id": "1.1.5",
+          "title": "Verify persisted rows on a fresh pipeline cache",
+          "status": "pending",
+          "goal": "Prove the list is independent of the versioned cache: after a CACHE_VERSION bump (or a deleted vulkan.fork-v<N>.bin), the list must still load and the runtime prefetch must rebuild matching keys from resident shaders. Record which part of the cache can and cannot be recovered offline.",
+          "touches": [
+            "src/tests/video_core/pipeline_keylist.cpp",
+            "docs/shader-precompile/learnings.md"
+          ],
+          "success": [
+            "List survives deleting the versioned cache",
+            "Recoverable versus unrecoverable rows documented",
+            "No stale row produces a wrong pipeline"
+          ],
+          "tests": "Move vulkan.fork-v<N>.bin aside, keep keylist.bin, boot OoT, confirm rows load and sibling prefetch still runs.",
+          "prerequisites": [
+            "1.1.4"
+          ],
+          "complexity": "Medium",
+          "agent": "mid_dev_agent",
+          "created_at": "2026-11-06T00:00:00Z",
+          "updated_at": "2026-11-06T00:00:00Z"
+        }
+      ]
+    },
+    {
+      "id": "1.2",
+      "title": "Eviction and boot policy",
+      "goal": "Stop evicting pipelines the title is still working through. The profile shows eviction churn is about two thirds of OoT's mid-game build cost.",
+      "prerequisites": [
+        "1.1"
+      ],
+      "tasks": [
+        {
+          "id": "1.2.1",
+          "title": "Replace idle-frame eviction with an LRU budget",
+          "status": "done",
+          "goal": "Evict only when the live pipeline count or estimated driver memory exceeds a budget, oldest use first, and never evict keys the used list says recent sessions used unless over budget. Keep an env override for A/B.",
+          "touches": [
+            "src/video_core/renderer_vulkan/vk_pipeline_cache.cpp",
+            "src/video_core/renderer_vulkan/vk_pipeline_cache.h"
+          ],
+          "success": [
+            "OoT second session no longer mass-evicts on the boot screen",
+            "Evictions and rebuilds fall well below run-time builds",
+            "Frames over 100 ms caused by known rebuilds disappear from the 352 s scenario"
+          ],
+          "tests": "A/B the same OoT save with EDEN_NX2_PIPELINE_EVICT_BUDGET unset and set; compare erasure and rebuild lines.",
+          "prerequisites": [],
+          "complexity": "Medium",
+          "agent": "mid_dev_agent",
+          "created_at": "2026-11-06T00:00:00Z",
+          "updated_at": "2026-11-06T17:10:00Z",
+          "changelog": "Pipeline eviction is an LRU memory budget instead of a 9000-frame idle rule"
+        },
+        {
+          "id": "1.2.2",
+          "title": "A/B asynchronous shaders against pipeline stalls",
+          "status": "pending",
+          "goal": "Measure Renderer.use_asynchronous_shaders=true (draws skipped while a pipeline builds) against the current blocking build on OoT. Decide whether pop-in is an acceptable trade for removed hitches.",
+          "touches": [
+            "docs/shader-precompile/learnings.md"
+          ],
+          "success": [
+            "Frame-time distribution compared",
+            "Visual difference described",
+            "Recommendation recorded"
+          ],
+          "tests": "Two OoT sessions with the same save, one setting flip; compare frames over 33 and 100 ms and screenshots.",
+          "prerequisites": [
+            "1.2.1"
+          ],
+          "complexity": "Low",
+          "agent": "basic_dev_agent",
+          "created_at": "2026-11-06T00:00:00Z",
+          "updated_at": "2026-11-06T00:00:00Z"
+        }
+      ]
+    },
+    {
+      "id": "1.3",
+      "title": "Static shader discovery",
+      "goal": "Make a shared list useful for content a player has not reached. Enumerate shader containers from the player's own title files so listed keys whose shaders are present can be built at boot, the way switch2mac's engine does.",
+      "prerequisites": [
+        "1.1"
+      ],
+      "tasks": [
+        {
+          "id": "1.3.1",
+          "title": "Audit the title's romfs for BNSH/CGSB/SHN shader containers",
+          "status": "done",
+          "goal": "Use tools/nx2/extract_static_shaders.py and shader_containers.py against an extracted OoT romfs, or add a read-only path through the emulator's romfs, and report how many native programs are precompiled and how many stage/header records they carry.",
+          "touches": [
+            "tools/nx2/extract_static_shaders.py",
+            "docs/shader-precompile/learnings.md"
+          ],
+          "success": [
+            "Answer recorded: does OoT ship static shaders",
+            "If yes, count, stages and container paths listed",
+            "If no, runtime-only shader generation confirmed with evidence"
+          ],
+          "tests": "Run the extractor against the title dump; verify each record's extent before trusting it.",
+          "complexity": "Medium",
+          "agent": "mid_dev_agent",
+          "created_at": "2026-11-06T00:00:00Z",
+          "updated_at": "2026-11-06T23:01:11Z",
+          "changelog": "Corrected: .bphsh/.bphsc/.bphnm are Havok physics, not shaders. OoT's native programs live in 5 .bfsha (BNSH) plus agl/gsys/tera .sharcb (BAHS), agl_ndsr.pck (NDSR) and Movie/Ndve/*.dat (NDVE). All are zstd frames naming IDs 1-4."
+        },
+        {
+          "id": "1.3.2",
+          "title": "Load title shader programs at boot for key-list builds",
+          "status": "in_progress",
+          "goal": "Turn the extracted static set into a boot-time win. The offline sweep shows the limit: 38,801 of 39,392 programs lower, but graphics compilation needs runtime uniform values and storage pointer classifications, so static archives alone cannot build those pipelines. Use the static set to pre-lower programs into a NativeProgramKey-indexed cache, and keep the key list's recorded environments as the pipeline source for unreached content.",
+          "touches": [
+            "tools/nx2/shader_scan/src/main.rs",
+            "tools/nx2/sweep_static_shaders.py",
+            "src/video_core/renderer_vulkan/vk_pipeline_keylist.cpp",
+            "src/video_core/renderer_vulkan/vk_pipeline_cache.cpp"
+          ],
+          "success": [
+            "Every program the dump carries is extracted with stage, control section and native code",
+            "Pre-lowered programs are cached by NativeProgramKey and reused at first draw",
+            "Listed pipelines for unreached content are built before the first draw from key-list environments",
+            "Boot remains bounded by the used list or an explicit budget",
+            "Disabling the feature restores today's behaviour exactly"
+          ],
+          "tests": "Delete the title cache, boot OoT with a shared list, confirm build count and the absence of a storm in the first area.",
+          "prerequisites": [
+            "1.3.1",
+            "1.1.4"
+          ],
+          "complexity": "Very High",
+          "agent": "pro_dev_agent",
+          "created_at": "2026-11-06T00:00:00Z",
+          "updated_at": "2026-11-06T23:13:26Z",
+          "changelog": "Extracted 39,392 programs and swept them: 38,801 lower, 1,776 compile and validate with synthetic defaults, 68 refuse to lower (13 distinct opcodes). Graphics compilation needs runtime state, so pre-lowering plus key-list environments is the workable split."
+        },
+        {
+          "id": "1.3.3",
+          "title": "Close the 13 lowering gaps the OoT sweep found",
+          "status": "pending",
+          "goal": "Make the 68 programs that refuse to lower translatable. The dominant refusals are 0xabb (uniform constant load mode, 20), 0xb63 (per-tap gather proofs, 20) and 0x944 (call linkage mode, 8), then unsupported opcodes 0xc08, 0x905, 0x3a9 and 0x481 and the mode checks 0xb66, 0x243, 0x981, 0x217, 0x3c2, 0x899. Every one is reachable from FoliageShader.sharcb, agl_ndsr_vr.pck or agl_common.sharcb.",
+          "touches": [
+            "src/shader_recompiler/frontend/maxwell/translate_program.cpp",
+            "src/shader_recompiler/frontend/maxwell/translate/"
+          ],
+          "success": [
+            "The offline sweep lowers all 39,392 OoT programs",
+            "Each new opcode or mode has a test with the OoT program that exposed it",
+            "No existing shader changes its lowered output"
+          ],
+          "tests": "Re-run sweep_static_shaders.py over the extracted OoT manifest; require zero lower-phase failures.",
+          "prerequisites": [
+            "1.3.2"
+          ],
+          "complexity": "High",
+          "agent": "pro_dev_agent",
+          "created_at": "2026-11-06T23:13:26Z",
+          "updated_at": "2026-11-06T23:13:26Z"
+        }
+      ]
+    },
+    {
+      "id": "1.4",
+      "title": "Sharing and collection",
+      "goal": "Let players exchange key lists safely, per title and per build, without ever shipping game data.",
+      "prerequisites": [
+        "1.3"
+      ],
+      "tasks": [
+        {
+          "id": "1.4.1",
+          "title": "Split loaded rows from rows recorded this run",
+          "status": "pending",
+          "goal": "Track which rows came from the shared list and write only new rows to a contribution file, so merging is a union of verified rows rather than a whole-file replacement.",
+          "touches": [
+            "src/video_core/renderer_vulkan/vk_pipeline_keylist.cpp",
+            "src/video_core/renderer_vulkan/vk_pipeline_keylist.h"
+          ],
+          "success": [
+            "Contribution file contains only rows absent from the loaded list",
+            "Merging a contribution file is idempotent",
+            "Rows are ordered deterministically for review"
+          ],
+          "tests": "Load a list, record one known and one new key, verify the contribution file holds exactly the new key.",
+          "prerequisites": [
+            "1.1.5"
+          ],
+          "complexity": "Medium",
+          "agent": "mid_dev_agent",
+          "created_at": "2026-11-06T00:00:00Z",
+          "updated_at": "2026-11-06T00:00:00Z"
+        },
+        {
+          "id": "1.4.2",
+          "title": "Merge tool and per-title list workflow",
+          "status": "pending",
+          "goal": "Add a small tool that verifies a contribution file's title, format and row sanity, merges it into the per-title list, and reports added and rejected rows. Document where players put a shared list.",
+          "touches": [
+            "tools/nx2/",
+            "docs/shader-precompile/learnings.md"
+          ],
+          "success": [
+            "Merge refuses foreign, truncated or wrong-title files",
+            "Added row counts reported",
+            "Documented path is picked up by the emulator without extra configuration"
+          ],
+          "tests": "Merge a good file, a corrupted file and a file for another title; expect success, refusal and refusal.",
+          "prerequisites": [
+            "1.4.1"
+          ],
+          "complexity": "Medium",
+          "agent": "mid_dev_agent",
+          "created_at": "2026-11-06T00:00:00Z",
+          "updated_at": "2026-11-06T00:00:00Z"
+        }
+      ]
+    },
+    {
+      "id": "1.5",
+      "title": "Rollout",
+      "goal": "Measure the finished feature on OoT and one other title, keep the diagnostics, and ship the behaviour without experiment switches.",
+      "prerequisites": [
+        "1.2",
+        "1.3",
+        "1.4"
+      ],
+      "release": {
+        "version": "0.1.0",
+        "tag_on_complete": false,
+        "release_notes": "Shader precompilation: per-title key list, sibling prefetch, budget eviction, and optional static shader discovery."
+      },
+      "tasks": [
+        {
+          "id": "1.5.1",
+          "title": "Measure end-to-end on OoT and one state-heavy title",
+          "status": "pending",
+          "goal": "Record boot time, rows loaded, rows prefetched, builds and evictions per session, frames over 33/50/100 ms, and the worst frame, against the 2026-11-06 baseline.",
+          "touches": [
+            "docs/shader-precompile/learnings.md"
+          ],
+          "success": [
+            "Frames over 100 ms reduced and the 352 s storm gone",
+            "Boot time explained (rows built versus time)",
+            "No visual regression in screenshots"
+          ],
+          "tests": "Same save, same settings, two sessions per title; compare logged counters.",
+          "prerequisites": [],
+          "complexity": "Medium",
+          "agent": "mid_dev_agent",
+          "created_at": "2026-11-06T00:00:00Z",
+          "updated_at": "2026-11-06T00:00:00Z"
+        },
+        {
+          "id": "1.5.2",
+          "title": "Remove experiment switches and document the shipped behaviour",
+          "status": "pending",
+          "goal": "Keep only diagnostics that stay off unless requested. Remove the key-list experiment switch once proven, keep the prefetch cap fixed, and update the debug tooling docs.",
+          "touches": [
+            "src/video_core/renderer_vulkan/vk_pipeline_cache.cpp",
+            "docs/nx2/debug-mcp.md",
+            "AGENTS.md"
+          ],
+          "success": [
+            "No env flag decides which fix runs",
+            "Diagnostics documented in the tool table",
+            "List format and privacy rule stated in user-facing docs"
+          ],
+          "tests": "Grep for the experiment env names and confirm only diagnostics remain.",
+          "prerequisites": [
+            "1.5.1"
+          ],
+          "complexity": "Low",
+          "agent": "basic_dev_agent",
+          "created_at": "2026-11-06T00:00:00Z",
+          "updated_at": "2026-11-06T00:00:00Z"
+        }
+      ]
+    },
+    {
+      "id": "1.6",
+      "title": "Full control MCP server",
+      "goal": "Turn the read-only debug server into a complete MCP control surface for agents: emulator control, gamepad input, memory read/write, CPU/GPU state queries and the existing debug tools, still opt-in, loopback only, and safe for a normal run.",
+      "prerequisites": [
+        "1.0"
+      ],
+      "tasks": [
+        {
+          "id": "1.6.1",
+          "title": "MCP control surface on the debug server",
+          "status": "pending",
+          "goal": "Promote the existing loopback debug server from passive observation to MCP control: pause/resume, present-granular step, and a typed state snapshot. Keep it off unless EDEN_NX2_DEBUG_SERVER is set, loopback only, and one request at a time. Document the safety boundary: no file system access, no keys, no network.",
+          "touches": [
+            "src/core/debugger/nx2_debug_server.cpp",
+            "src/core/debugger/nx2_debug_tools.cpp",
+            "tools/nx2/debug_mcp.py",
+            "docs/nx2/debug-mcp.md"
+          ],
+          "success": [
+            "pause, resume and step_frames work without desynchronising the Qt EmuThread",
+            "A state snapshot returns title, core state, paused flag, presents and fps",
+            "The server stays off by default and refuses non-loopback addresses"
+          ],
+          "tests": "Pause, step 10 presents, resume on OoT; confirm the game advances exactly 10 frames and the UI stays consistent.",
+          "complexity": "Medium",
+          "agent": "mid_dev_agent",
+          "created_at": "2026-11-06T00:00:00Z",
+          "updated_at": "2026-11-06T00:00:00Z"
+        },
+        {
+          "id": "1.6.2",
+          "title": "Gamepad and input injection over MCP",
+          "status": "pending",
+          "goal": "Inject buttons and sticks through the emulated controller so an agent can walk to a scene, reproduce a bug, or cover an area for shader discovery without the owner playing. Timed by presents, not wall time, with a recorded sequence that can be replayed on a fresh boot.",
+          "touches": [
+            "src/hid_core/frontend/emulated_controller.h",
+            "src/core/debugger/nx2_debug_tools.cpp",
+            "tools/nx2/debug_mcp.py"
+          ],
+          "success": [
+            "Buttons and sticks are ORed over the player's mapping without changing it",
+            "Sequences replay deterministically by present count",
+            "Releasing control restores the physical controller immediately"
+          ],
+          "tests": "Replay a short walk in Kokiri Forest, then a second boot from the same save; both reach the same area.",
+          "prerequisites": [
+            "1.6.1"
+          ],
+          "complexity": "High",
+          "agent": "pro_dev_agent",
+          "created_at": "2026-11-06T00:00:00Z",
+          "updated_at": "2026-11-06T00:00:00Z"
+        },
+        {
+          "id": "1.6.3",
+          "title": "Guest and GPU memory read/write",
+          "status": "pending",
+          "goal": "Read and write application memory and GPU address spaces by address and size, through Core::Memory and Tegra::MemoryManager, with unmapped ranges reported instead of guessed. Reuse the mapped-page walker already added for scan_shaders.",
+          "touches": [
+            "src/core/memory.h",
+            "src/core/debugger/nx2_debug_tools.cpp",
+            "src/video_core/memory_manager.h",
+            "tools/nx2/debug_mcp.py"
+          ],
+          "success": [
+            "read_guest_memory and read_gpu_memory return exact bytes or a mapped-range error",
+            "write_guest_memory refuses ranges that are not mapped and reports what changed",
+            "GPU reads run on the rasterizer thread and flush caches correctly"
+          ],
+          "tests": "Read a known string at its process address; read a texture header at its GPU address; write and read back a scratch byte.",
+          "prerequisites": [
+            "1.6.1"
+          ],
+          "complexity": "Medium",
+          "agent": "mid_dev_agent",
+          "created_at": "2026-11-06T00:00:00Z",
+          "updated_at": "2026-11-06T00:00:00Z"
+        },
+        {
+          "id": "1.6.4",
+          "title": "CPU, GPU and cache state queries",
+          "status": "pending",
+          "goal": "Expose the state an agent needs without a log round-trip: guest core register sets and thread states, active channel and GPU engine registers, pipeline and shader cache counts, frame pacing, and the existing profile zones. Extend the status tool rather than adding a second state path.",
+          "touches": [
+            "src/core/debugger/nx2_debug_tools.cpp",
+            "src/core/arm/",
+            "src/video_core/renderer_vulkan/vk_pipeline_cache.cpp",
+            "tools/nx2/debug_mcp.py"
+          ],
+          "success": [
+            "One call returns guest core states, active channel, pipeline cache size and eviction counters",
+            "GPU engine registers and frame pacing match the log values",
+            "Queries are read-only and cannot mutate emulator state"
+          ],
+          "tests": "Compare a query against the same frame's DKB trace lines and the pipeline cache log.",
+          "prerequisites": [
+            "1.6.1"
+          ],
+          "complexity": "Medium",
+          "agent": "mid_dev_agent",
+          "created_at": "2026-11-06T00:00:00Z",
+          "updated_at": "2026-11-06T00:00:00Z"
+        },
+        {
+          "id": "1.6.5",
+          "title": "Debug tools and shader discovery over MCP",
+          "status": "pending",
+          "goal": "Move the remaining env-gated diagnostics behind the control surface: shader scan and dictionary extraction, frame capture options, shader inventory, reject/restore, and live toggles that are safe at a frame end. Keep the env switches as the initial value so a normal run is unchanged.",
+          "touches": [
+            "src/core/debugger/nx2_debug_tools.cpp",
+            "src/video_core/shader_environment.cpp",
+            "tools/nx2/debug_mcp.py",
+            "docs/nx2/debug-mcp.md"
+          ],
+          "success": [
+            "scan_shaders, dictionary extraction and shader inventory work over MCP",
+            "Reject and restore are reversible without a rebuild",
+            "Only diagnostics remain behind env switches; experiment switches are removed"
+          ],
+          "tests": "Extract the zstd dictionaries from a running OoT, decompress one bfsha and compare the BNSH count with the offline Rust scan.",
+          "prerequisites": [
+            "1.6.2",
+            "1.6.3"
+          ],
+          "complexity": "High",
+          "agent": "pro_dev_agent",
+          "created_at": "2026-11-06T00:00:00Z",
+          "updated_at": "2026-11-06T00:00:00Z"
+        },
+        {
+          "id": "1.6.6",
+          "title": "Configurable screenshot with shader and render toggles",
+          "status": "pending",
+          "goal": "Extend the screenshot tool so an agent can compare images under controlled changes in one call: shader toggles (reject or isolate a shader, show only one stage, skip post-processing or upscaling), render overrides (resolution, sRGB/linear output, alpha), and a frame or pass selector. Return the PNG plus the state that produced it so two images are comparable.",
+          "touches": [
+            "src/core/debugger/nx2_debug_tools.cpp",
+            "src/video_core/renderer_base.cpp",
+            "src/video_core/renderer_vulkan/vk_rasterizer.cpp",
+            "tools/nx2/debug_mcp.py"
+          ],
+          "success": [
+            "screenshot accepts shader reject/isolate lists and render overrides",
+            "The response records every override that was active",
+            "Two screenshots A/B a shader or pass without a relaunch",
+            "The tool never writes outside the session dump directory"
+          ],
+          "tests": "Capture the same frame normally and with one shader rejected; confirm only the intended draws changed and the manifest lists the override.",
+          "prerequisites": [
+            "1.6.1"
+          ],
+          "complexity": "Medium",
+          "agent": "mid_dev_agent",
+          "created_at": "2026-11-06T00:00:00Z",
+          "updated_at": "2026-11-06T00:00:00Z"
+        }
+      ]
+    }
+  ]
+}

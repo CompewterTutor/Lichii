@@ -31,6 +31,16 @@ using Tegra::Memory::GuestMemoryFlags;
 
 std::atomic<size_t> MemoryManager::unique_identifier_generator{};
 
+namespace {
+std::mutex g_instance_mutex;
+std::vector<Tegra::MemoryManager*> g_instances;
+} // Anonymous namespace
+
+std::vector<MemoryManager*> MemoryManager::Instances() {
+    std::scoped_lock lock{g_instance_mutex};
+    return g_instances;
+}
+
 MemoryManager::MemoryManager(Core::System& system_, MaxwellDeviceMemoryManager& memory_, u64 address_space_bits_, GPUVAddr split_address_, u64 big_page_bits_, u64 page_bits_)
     : system{system_}, memory{memory_}, address_space_bits{address_space_bits_}
     , split_address{split_address_}, page_bits{page_bits_}, big_page_bits{big_page_bits_}
@@ -55,6 +65,10 @@ MemoryManager::MemoryManager(Core::System& system_, MaxwellDeviceMemoryManager& 
     big_entries.resize(big_page_table_size / 32, 0);
     big_page_continuous.resize(big_page_table_size / continuous_bits, 0);
     entries.resize(page_table_size / 32, 0);
+    {
+        std::scoped_lock lock{g_instance_mutex};
+        g_instances.push_back(this);
+    }
 }
 
 MemoryManager::MemoryManager(Core::System& system_, u64 address_space_bits_, GPUVAddr split_address_, u64 big_page_bits_, u64 page_bits_)
@@ -65,7 +79,10 @@ void MemoryManager::SetNativeSyncpointShim(GPUVAddr address) {
     native_syncpoint_shim.store(address, std::memory_order_release);
 }
 
-MemoryManager::~MemoryManager() = default;
+MemoryManager::~MemoryManager() {
+    std::scoped_lock lock{g_instance_mutex};
+    std::erase(g_instances, this);
+}
 
 MemoryManager::EntryType MemoryManager::GetEntry(size_t position, bool is_big_page) const {
     if (is_big_page) {
@@ -739,8 +756,7 @@ bool MemoryManager::IsContinuousRange(GPUVAddr gpu_addr, std::size_t size) const
     return result;
 }
 
-bool MemoryManager::IsFullyMappedRange(GPUVAddr gpu_addr, std::size_t size) const {
-    if (!IsWithinGPUAddressRange(gpu_addr) || size > address_space_size - gpu_addr) {
+bool MemoryManager::IsFullyMappedRange(GPUVAddr gpu_addr, std::size_t size) const {    if (!IsWithinGPUAddressRange(gpu_addr) || size > address_space_size - gpu_addr) {
         return false;
     }
     bool result{true};
@@ -758,6 +774,50 @@ bool MemoryManager::IsFullyMappedRange(GPUVAddr gpu_addr, std::size_t size) cons
     };
     MemoryOperation(gpu_addr, size, true, pass, fail, check_short_pages);
     return result;
+}
+
+void MemoryManager::VisitMappedPages(
+    const std::function<void(GPUVAddr, const u8*, std::size_t)>& visitor) {
+    page_table.ForEachAllocatedLevel(
+        [&](std::size_t level, const u32* entries, std::size_t count) {
+            for (std::size_t index = 0; index < count; ++index) {
+                if (entries[index] == 0) {
+                    continue;
+                }
+                const GPUVAddr gpu_addr = (GPUVAddr(level) * count + index) << page_bits;
+                if (!IsWithinGPUAddressRange(gpu_addr)) {
+                    continue;
+                }
+                const std::optional<DAddr> device = GpuToCpuAddress(gpu_addr);
+                if (!device.has_value()) {
+                    continue;
+                }
+                u8* const host = memory.GetPointer<u8>(*device);
+                if (host == nullptr) {
+                    continue;
+                }
+                visitor(gpu_addr, host, page_size);
+            }
+        });
+    const std::size_t big_page_count = big_page_table_mask + 1;
+    for (std::size_t index = 0; index < big_page_count; ++index) {
+        const GPUVAddr gpu_addr = GPUVAddr(index) << big_page_bits;
+        if (GetEntry(gpu_addr, true) != EntryType::Mapped) {
+            continue;
+        }
+        if (!IsWithinGPUAddressRange(gpu_addr)) {
+            continue;
+        }
+        const std::optional<DAddr> device = GpuToCpuAddress(gpu_addr);
+        if (!device.has_value()) {
+            continue;
+        }
+        u8* const host = memory.GetPointer<u8>(*device);
+        if (host == nullptr) {
+            continue;
+        }
+        visitor(gpu_addr, host, big_page_size);
+    }
 }
 
 boost::container::small_vector<std::pair<GPUVAddr, std::size_t>, 32>

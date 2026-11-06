@@ -160,6 +160,14 @@ public:
         return memory_manager;
     }
 
+    Tegra::MemoryManager& GMMU() {
+        return gmmu_manager;
+    }
+
+    const Tegra::MemoryManager& GMMU() const {
+        return gmmu_manager;
+    }
+
     Common::FlatAllocator<u32, 0, 32>& Allocator() {
         return allocator;
     }

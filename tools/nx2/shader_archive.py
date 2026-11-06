@@ -71,14 +71,15 @@ def parse_bnsh(data: bytes) -> list[dict]:
     _range(data, 0, 0x98)
     if data[:8] != b"BNSH\0\0\0\0" or data[0x60:0x64] != b"grsc":
         raise ArchiveError("invalid BNSH header")
-    if data[0xc:0xe] != b"\xff\xfe":
+    version = tuple(data[8:12])
+    # Switch 2 BNSH does not carry the 0xFF 0xFE byte-order marker the older files use.
+    if data[0xc:0xe] != b"\xff\xfe" and version not in ((1, 4, 2, 0),):
         raise ArchiveError("unsupported BNSH byte order")
     u16 = lambda off: struct.unpack("<H", _range(data, off, 2))[0]
     u32 = lambda off: struct.unpack("<I", _range(data, off, 4))[0]
     u64 = lambda off: struct.unpack("<Q", _range(data, off, 8))[0]
     if u32(0x1c) != len(data):
         raise ArchiveError("invalid BNSH file size")
-    version = tuple(data[8:12])
     if version not in ((0, 4, 2, 0), (1, 3, 2, 0), (1, 4, 2, 0)):
         raise ArchiveError(f"unsupported BNSH version {version}")
     api_type, api_version = u16(0x70), u16(0x72)
@@ -114,6 +115,25 @@ def parse_bnsh(data: bytes) -> list[dict]:
             result.append(dict(variation=variation, stage=stage, code=code, control=control,
                                code_offset=code_offset, control_offset=control_offset,
                                api_type=api_type, api_version=api_version, version=version))
+        # Switch 2 stores task and mesh stages after the six graphics/compute slots.
+        for offset, stage, stage_id in ((0x40, "task", 6), (0x48, "mesh", 7)):
+            record = u64(program + offset)
+            if not record:
+                continue
+            _range(data, record, 0x40)
+            control_offset, code_offset = u64(record + 8), u64(record + 16)
+            code_size, control_size = u32(record + 24), u32(record + 28)
+            if not code_offset or not code_size or (control_size and not control_offset):
+                continue
+            control = _range(data, control_offset, control_size)
+            if len(control) <= 0x56 or struct.unpack_from("<I", control, 4)[0] != 0xc9:
+                continue
+            if control[0x56] != stage_id:
+                continue
+            code = _range(data, code_offset, code_size)
+            result.append(dict(variation=variation, stage=stage, code=code, control=control,
+                               code_offset=code_offset, control_offset=control_offset,
+                               api_type=api_type, api_version=api_version, version=version))
     return result
 
 
@@ -121,7 +141,7 @@ def find_bnsh(data: bytes) -> list[tuple[int, bytes]]:
     """Find bounded embedded BNSHs in FSHA, returning (FSHA offset, bytes)."""
     if len(data) < 0x20 or data[:4] != b"FSHA":
         raise ArchiveError("not a BFSHA archive")
-    if data[0xc:0xe] != b"\xff\xfe" or struct.unpack_from("<I", data, 0x1c)[0] != len(data):
+    if data[0xc:0xe] != b"\xff\xfe" and struct.unpack_from("<I", data, 0x1c)[0] != len(data):
         raise ArchiveError("invalid BFSHA byte order or size")
     result = []
     offset = 0

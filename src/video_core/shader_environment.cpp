@@ -264,7 +264,7 @@ void GenericEnvironment::Dump(u64 pipeline_hash, u64 shader_hash) {
     DumpImpl(pipeline_hash, shader_hash, code, read_highest, read_lowest, initial_offset, stage);
 }
 
-void GenericEnvironment::Serialize(std::ofstream& file) const {
+void GenericEnvironment::Serialize(std::ostream& file) const {
     const u64 code_size{static_cast<u64>(CachedSizeBytes())};
     const u64 num_texture_types{static_cast<u64>(texture_types.size())};
     const u64 num_texture_pixel_formats{static_cast<u64>(texture_pixel_formats.size())};
@@ -1015,7 +1015,7 @@ u32 ComputeEnvironment::ReadViewportTransformState() {
     return viewport_transform_state;
 }
 
-void FileEnvironment::Deserialize(std::ifstream& file) {
+void FileEnvironment::Deserialize(std::istream& file) {
     u64 code_size{};
     u64 num_texture_types{};
     u64 num_texture_pixel_formats{};
@@ -1203,6 +1203,29 @@ void SerializePipeline(std::span<const char> key, std::span<const GenericEnviron
     }
     file.write(key.data(), key.size_bytes());
 
+} catch (const std::ios_base::failure& e) {
+    LOG_ERROR(Common_Filesystem, "{}", e.what());
+    if (!Common::FS::RemoveFile(filename)) {
+        LOG_ERROR(Common_Filesystem, "Failed to delete pipeline cache file {}",
+                  Common::FS::PathToUTF8String(filename));
+    }
+}
+
+void AppendPipelineRecord(std::span<const char> serialized_envs, std::span<const char> key,
+                          const std::filesystem::path& filename, u32 cache_version) try {
+    std::ofstream file(filename, std::ios::binary | std::ios::ate | std::ios::app);
+    file.exceptions(std::ifstream::failbit);
+    if (!file.is_open()) {
+        LOG_ERROR(Common_Filesystem, "Failed to open pipeline cache file {}",
+                  Common::FS::PathToUTF8String(filename));
+        return;
+    }
+    if (file.tellp() == 0) {
+        file.write(MAGIC_NUMBER.data(), MAGIC_NUMBER.size())
+            .write(reinterpret_cast<const char*>(&cache_version), sizeof(cache_version));
+    }
+    file.write(serialized_envs.data(), serialized_envs.size_bytes());
+    file.write(key.data(), key.size_bytes());
 } catch (const std::ios_base::failure& e) {
     LOG_ERROR(Common_Filesystem, "{}", e.what());
     if (!Common::FS::RemoveFile(filename)) {

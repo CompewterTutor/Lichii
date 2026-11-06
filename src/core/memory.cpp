@@ -774,6 +774,21 @@ struct Memory::Impl {
             GetInteger(vaddr), []() {}, []() {});
     }
 
+    void VisitMappedPages(const std::function<void(VAddr, const u8*, std::size_t)>& visitor) const {
+        if (current_page_table == nullptr) {
+            return;
+        }
+        auto& entries = current_page_table->entries;
+        const std::size_t count = entries.size();
+        for (std::size_t index = 0; index < count; ++index) {
+            const VAddr vaddr = static_cast<VAddr>(index) << YUZU_PAGEBITS;
+            const u8* const pointer = GetPointerSilent(vaddr);
+            if (pointer != nullptr) {
+                visitor(vaddr, pointer, YUZU_PAGESIZE);
+            }
+        }
+    }
+
     [[nodiscard]] u8* GetContiguousSpan(VAddr addr, std::size_t size) const noexcept {
         u8* const base = GetPointerSilent(addr);
         if (base == nullptr) {
@@ -1154,6 +1169,11 @@ const u8* Memory::GetSpan(const VAddr src_addr, const std::size_t size) const {
 
 u8* Memory::GetSpan(const VAddr src_addr, const std::size_t size) {
     return impl->GetSpan(src_addr, size);
+}
+
+void Memory::VisitMappedPages(
+    const std::function<void(VAddr, const u8*, std::size_t)>& visitor) {
+    impl->VisitMappedPages(visitor);
 }
 
 bool Memory::WriteBlock(const Common::ProcessAddress dest_addr, const void* src_buffer,

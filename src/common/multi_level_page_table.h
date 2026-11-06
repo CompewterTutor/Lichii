@@ -62,6 +62,21 @@ public:
         return base_ptr;
     }
 
+    /// Debug helper: calls `f(level_index, entries, entry_count)` for every committed level.
+    template <typename Func>
+    void ForEachAllocatedLevel(Func&& f) const {
+        if (base_ptr == nullptr) {
+            return;
+        }
+        const std::size_t entries_per_level{1ULL << (first_level_shift - page_bits)};
+        for (std::size_t level = 0; level < first_level_map.size(); ++level) {
+            if (first_level_map[level] == nullptr) {
+                continue;
+            }
+            f(level, base_ptr + level * entries_per_level, entries_per_level);
+        }
+    }
+
 private:
     void AllocateLevel(u64 level);
 

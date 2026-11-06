@@ -34,6 +34,7 @@
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
+#include "video_core/renderer_vulkan/vk_pipeline_keylist.h"
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
 #include "video_core/shader_cache.h"
 
@@ -154,6 +155,17 @@ private:
                                                      PipelineStatistics* statistics,
                                                      bool build_in_parallel);
 
+    /// True when a key from the list can be built on this device: the same dynamic-state features
+    /// that the boot loader requires of a cached key.
+    [[nodiscard]] bool DeviceSupportsKey(const GraphicsPipelineCacheKey& key) const;
+
+    /// Builds the listed state variants of the shaders this key uses, on the worker pool, from a
+    /// serialized snapshot of the environments (never from live registers).
+    void PrefetchListedPipelines(const GraphicsEnvironments& environments);
+
+    /// Adds pipelines built by workers to the cache, on the GPU thread.
+    void DrainPrefetchedPipelines();
+
     void SerializeVulkanPipelineCache(const std::filesystem::path& filename,
                                       const vk::PipelineCache& pipeline_cache, u32 cache_version);
 
@@ -202,6 +214,18 @@ private:
     std::filesystem::path used_pipelines_filename;
     std::chrono::steady_clock::time_point used_pipelines_saved{};
     void SaveUsedPipelines();
+
+    /// <title>/keylist.bin: every pipeline this title has used, as identifiers only. It outlives
+    /// the version-suffixed cache and is the file players can share.
+    PipelineKeyList keylist;
+    std::filesystem::path keylist_filename;
+    bool keylist_loaded{};
+    bool prefetch_enabled{};
+    std::mutex prefetch_mutex;
+    std::vector<std::pair<GraphicsPipelineCacheKey, std::unique_ptr<GraphicsPipeline>>>
+        prefetched_pipelines;
+    std::unordered_set<u64> prefetch_pending;
+    std::unordered_set<u64> prefetch_failed;
 
     std::filesystem::path vulkan_pipeline_cache_filename;
     vk::PipelineCache vulkan_pipeline_cache;

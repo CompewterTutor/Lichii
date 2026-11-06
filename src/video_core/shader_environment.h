@@ -93,7 +93,7 @@ public:
 
     void Dump(u64 pipeline_hash, u64 shader_hash) override;
 
-    void Serialize(std::ofstream& file) const;
+    void Serialize(std::ostream& file) const;
 
     bool HasHLEMacroState() const override {
         return has_hle_engine_state;
@@ -215,7 +215,7 @@ public:
     FileEnvironment& operator=(const FileEnvironment&) = delete;
     FileEnvironment(const FileEnvironment&) = delete;
 
-    void Deserialize(std::ifstream& file);
+    void Deserialize(std::istream& file);
 
     [[nodiscard]] u64 ReadInstruction(u32 address) override;
 
@@ -272,6 +272,11 @@ private:
 
 void SerializePipeline(std::span<const char> key, std::span<const GenericEnvironment* const> envs,
                        const std::filesystem::path& filename, u32 cache_version);
+
+/// Appends one record whose environments are already serialized (a length-prefixed count followed
+/// by the environment bodies), used when a pipeline was built from a snapshot.
+void AppendPipelineRecord(std::span<const char> serialized_envs, std::span<const char> key,
+                          const std::filesystem::path& filename, u32 cache_version);
 
 template <typename Key, typename Envs>
     requires std::is_trivially_copyable_v<Key>

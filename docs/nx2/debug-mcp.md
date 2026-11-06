@@ -315,3 +315,25 @@ the server again on the same port.
 - `log_tail` sees lines logged after the game finished loading. The boot itself is in
   `eden_log.txt`.
 - Runtime rejections last for one boot. Starting the next session clears them.
+
+## scan_shaders (shader precompilation prototype)
+
+`scan_shaders {magic?, width?, max_hits?, before_kb?, after_kb?}` walks every mapped page of
+every live GPU address space (`Tegra::MemoryManager::Instances()`: a Switch 2 title maps through
+the manager its `nvhost_as_gpu` session created, not Host1x's default one), searches for an
+aligned value and writes a window around each hit under
+`<dump dir>/shader-scan-<session>/region-<guest address>.bin`, with `manifest.jsonl`.
+
+- Default `magic` is the emulator's native address map (`NEDENMAP`), `width` 8. That magic is
+  synthesized during lowering and does **not** exist in guest memory; scanning for it returns 0.
+- A raw native program is a 128-byte header followed by Ampere instructions. Across 1,020 dumped
+  headers the first word was one of `0x000C0481`, `0x020C0481`, `0x000CD482`, `0x000C5482`,
+  `0x020C0C81`; bytes `0x08..0x18` and most of `0x30..0x7f` are zero. Searching the most common
+  word over ~6 GiB of mapped pages found 256 hits and 84 windows, and 6 of 200 dumped program
+  prefixes appeared in those windows, so real loaded programs are found.
+- `magic` + `width` also search for arbitrary values. Searching for the zstd dictionary magic
+  (`37a430ec`) in guest memory during gameplay found nothing, so the `.bphsh` dictionary is not
+  resident as a formatted dictionary.
+- A scan reads guest memory from the server thread while the game runs. Do not treat a window as
+  a consistent snapshot; rerun or pause for one.
+

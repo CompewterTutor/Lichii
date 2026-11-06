@@ -11,10 +11,13 @@
 #include <iostream>
 #include <memory>
 #include <span>
+#include <sstream>
 #include <thread>
 #include <vector>
 #include <bit>
 #include <numeric>
+#include <cstdlib>
+#include <cstring>
 #include "common/cityhash.h"
 #include "common/scope_exit.h"
 #include "common/fs/fs.h"
@@ -378,6 +381,46 @@ bool DriverCachesPipelines(const Device& device) {
         return false;
     }
 }
+
+// EDEN_NX2_KEYLIST_PREFETCH=0 stops the key list from building listed state variants early.
+bool KeylistPrefetchEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_KEYLIST_PREFETCH");
+        return value == nullptr || value[0] != '0';
+    }();
+    return enabled;
+}
+
+// A pipeline holds about 0.45 MB of driver memory; this estimate turns a memory budget into a
+// pipeline count. The A/B switch EDEN_NX2_PIPELINE_EVICT=legacy restores the idle-time rule.
+struct EvictionBudget {
+    bool legacy{};
+    size_t pipelines{};
+};
+
+EvictionBudget GetEvictionBudget() {
+    static const EvictionBudget budget = [] {
+        EvictionBudget result{};
+        if (const char* mode = std::getenv("EDEN_NX2_PIPELINE_EVICT");
+            mode != nullptr && std::strcmp(mode, "legacy") == 0) {
+            result.legacy = true;
+            return result;
+        }
+        constexpr size_t DefaultMegabytes = 1536;
+        size_t megabytes = DefaultMegabytes;
+        if (const char* value = std::getenv("EDEN_NX2_PIPELINE_BUDGET_MB")) {
+            const long parsed = std::strtol(value, nullptr, 10);
+            if (parsed > 0) {
+                megabytes = static_cast<size_t>(parsed);
+            }
+        }
+        constexpr size_t Kilobyte = 1024;
+        constexpr size_t PipelineKilobytes = 450;
+        result.pipelines = megabytes * Kilobyte / PipelineKilobytes;
+        return result;
+    }();
+    return budget;
+}
 } // Anonymous namespace
 
 PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
@@ -395,6 +438,7 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
       use_asynchronous_shaders{Settings::values.use_asynchronous_shaders.GetValue()},
       use_vulkan_pipeline_cache{Settings::values.use_vulkan_driver_pipeline_cache.GetValue() &&
                                 !DriverCachesPipelines(device_)},
+      prefetch_enabled{PipelineKeyList::Enabled() && KeylistPrefetchEnabled()},
       workers(device.HasBrokenParallelShaderCompiling() ? 1ULL : GetTotalPipelineWorkers(),
               "VkPipelineBuilder", {}, Common::ThreadPlacement::Background),
       serialization_thread(1, "VkPipelineSerialization", {},
@@ -671,6 +715,9 @@ PipelineCache::~PipelineCache() {
 
 void PipelineCache::SaveUsedPipelines() {
     used_pipelines_saved = std::chrono::steady_clock::now();
+    if (!keylist_filename.empty() && PipelineKeyList::Enabled()) {
+        keylist.Save(keylist_filename);
+    }
     // A session too short to say what the game uses (a boot to the menu) keeps the old list.
     constexpr size_t MinimumUsed = 64;
     if (used_pipelines_filename.empty() ||
@@ -748,6 +795,13 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() {
     auto& entry{pair->second};
     if (is_new) {
         entry = CreateComputePipeline(key, shader);
+        if (entry.pipeline) {
+            keylist.RecordCompute({
+                .unique_hash = key.unique_hash,
+                .shared_memory_size = key.shared_memory_size,
+                .workgroup_size = key.workgroup_size,
+            });
+        }
     }
     return entry.Get(kepler_compute->IsNativeMode(),
                      kepler_compute->regs.code_loc.Address() + qmd.program_start, key);
@@ -764,6 +818,9 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
             SerializeVulkanPipelineCache(vulkan_pipeline_cache_filename, vulkan_pipeline_cache,
                                          CACHE_VERSION);
         }
+        if (!keylist_filename.empty() && PipelineKeyList::Enabled()) {
+            keylist.Save(keylist_filename);
+        }
     }
 
     const auto shader_dir{Common::FS::GetEdenPath(Common::FS::EdenPath::ShaderDir)};
@@ -776,6 +833,10 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         VideoCommon::VersionedPipelineCachePath(base_dir, "vulkan", CACHE_VERSION);
     used_pipelines_filename =
         VideoCommon::VersionedPipelineCachePath(base_dir, "vulkan_used", CACHE_VERSION);
+    keylist_filename = base_dir / "keylist.bin";
+    if (PipelineKeyList::Enabled()) {
+        keylist.Load(keylist_filename);
+    }
     used_pipelines = LoadUsedPipelines(used_pipelines_filename, MaxUsedPipelineAge(device));
     used_pipelines_saved = std::chrono::steady_clock::now();
     size_t skipped_pipelines = 0;
@@ -802,6 +863,11 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     const auto load_compute{[&](std::ifstream& file, FileEnvironment env) {
         ComputePipelineCacheKey key;
         file.read(reinterpret_cast<char*>(&key), sizeof(key));
+        keylist.RecordCompute({
+            .unique_hash = key.unique_hash,
+            .shared_memory_size = key.shared_memory_size,
+            .workgroup_size = key.workgroup_size,
+        });
 
         workers.QueueWork([this, key, env_ = std::move(env), &state, &callback]() mutable {
             ShaderPools pools;
@@ -830,33 +896,14 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
             return;
         }
 
-        if ((key.state.extended_dynamic_state != 0) !=
-                dynamic_features.has_extended_dynamic_state ||
-            (key.state.extended_dynamic_state_2 != 0) !=
-                dynamic_features.has_extended_dynamic_state_2 ||
-            (key.state.extended_dynamic_state_2_logic_op != 0) !=
-                dynamic_features.has_extended_dynamic_state_2_logic_op ||
-            (key.state.extended_dynamic_state_3_blend != 0) !=
-                dynamic_features.has_extended_dynamic_state_3_blend ||
-            (key.state.extended_dynamic_state_3_enables != 0) !=
-                dynamic_features.has_extended_dynamic_state_3_enables ||
-            (key.state.color_write_enable_dynamic != 0) !=
-                dynamic_features.has_color_write_enable ||
-            (key.state.dynamic_vertex_input != 0) !=
-                dynamic_features.has_dynamic_vertex_input) {
+        if (!DeviceSupportsKey(key)) {
             return;
         }
 
-        const bool key_requests_provoking_last = key.state.provoking_vertex_last != 0;
-        if (key_requests_provoking_last && !dynamic_features.has_provoking_vertex_last_mode) {
-            return;
-        }
-
-        const bool key_uses_transform_feedback = key.state.xfb_enabled != 0;
-        if (key_uses_transform_feedback && key_requests_provoking_last &&
-            !dynamic_features.has_provoking_vertex_tf_preserve) {
-            return;
-        }
+        PipelineListGraphicsKey listed{};
+        listed.unique_hashes = key.unique_hashes;
+        listed.state = key.state;
+        keylist.RecordGraphics(listed);
 
         const u64 hash = key.Hash();
         disk_pipelines.insert(hash);
@@ -904,6 +951,10 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     lock.unlock();
 
     workers.WaitForRequests(stop_loading);
+    keylist_loaded = true;
+    if (PipelineKeyList::Enabled()) {
+        LOG_INFO(Render_Vulkan, "Key list holds {} graphics keys", keylist.GraphicsCount());
+    }
 
     if (use_vulkan_pipeline_cache) {
         SerializeVulkanPipelineCache(vulkan_pipeline_cache_filename, vulkan_pipeline_cache,
@@ -1027,6 +1078,7 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
 
 void PipelineCache::TickFrame() {
     ++frame_count;
+    DrainPrefetchedPipelines();
     while (!evicted_pipelines.empty() && scheduler.IsFree(evicted_pipelines.front().first)) {
         evicted_pipelines.pop_front();
     }
@@ -1042,29 +1094,94 @@ void PipelineCache::EvictUnusedPipelines() {
     if (device.IsMoltenVK()) {
         return;
     }
-    // Each built pipeline holds ~0.45 MB of driver memory and none was ever destroyed, so it grew
-    // with every place a session went (title 1: 1,500 on its title screen alone). One unused for
-    // this long is destroyed; it takes 2-3 ms to build again from the driver's pipeline cache.
-    constexpr u64 EvictAfterFrames = 9000;
-    if (frame_count <= EvictAfterFrames) {
-        return;
-    }
-    const u64 cutoff = frame_count - EvictAfterFrames;
+    const EvictionBudget budget = GetEvictionBudget();
     const u64 tick = scheduler.CurrentTick();
     size_t evicted = 0;
-    for (auto it = graphics_cache.begin(); it != graphics_cache.end();) {
-        GraphicsPipeline* const pipeline = it->second.get();
-        if (pipeline == nullptr || pipeline == current_pipeline || !pipeline->IsBuilt() ||
-            pipeline->LastUse() >= cutoff) {
-            ++it;
+
+    if (budget.legacy) {
+        // Each built pipeline holds ~0.45 MB of driver memory and none was ever destroyed, so it
+        // grew with every place a session went (title 1: 1,500 on its title screen alone). One
+        // unused for this long is destroyed.
+        constexpr u64 EvictAfterFrames = 9000;
+        if (frame_count <= EvictAfterFrames) {
+            return;
+        }
+        const u64 cutoff = frame_count - EvictAfterFrames;
+        for (auto it = graphics_cache.begin(); it != graphics_cache.end();) {
+            GraphicsPipeline* const pipeline = it->second.get();
+            if (pipeline == nullptr || pipeline == current_pipeline || !pipeline->IsBuilt() ||
+                pipeline->LastUse() >= cutoff) {
+                ++it;
+                continue;
+            }
+            if (used_this_session.erase(pipeline) != 0) {
+                used_and_evicted.insert(it->first.Hash());
+            }
+            evicted_pipelines.emplace_back(tick, std::move(it->second));
+            it = graphics_cache.erase(it);
+            ++evicted;
+        }
+        if (evicted != 0) {
+            for (auto& [key, pipeline] : graphics_cache) {
+                if (pipeline) {
+                    pipeline->ClearTransitions();
+                }
+            }
+            LOG_INFO(Render_Vulkan,
+                     "Evicted {} graphics pipelines unused for {} frames, {} left", evicted,
+                     EvictAfterFrames, graphics_cache.size());
+        }
+        return;
+    }
+
+    // Budget eviction: keep the pipelines a title is working through. A working set larger than
+    // the old 9000-frame window was mass-evicted and rebuilt, which cost more than the driver
+    // memory it saved. Only the least recently used states go, to a target below the budget so
+    // the next checks do not evict again immediately.
+    const size_t live = graphics_cache.size();
+    if (live <= budget.pipelines) {
+        return;
+    }
+    const size_t target = budget.pipelines - budget.pipelines / 8;
+    struct Candidate {
+        const GraphicsPipelineCacheKey* key;
+        GraphicsPipeline* pipeline;
+        u64 last_use;
+        bool recent;
+    };
+    std::vector<Candidate> candidates;
+    candidates.reserve(live);
+    for (auto& [key, pipeline] : graphics_cache) {
+        if (pipeline == nullptr || pipeline.get() == current_pipeline || !pipeline->IsBuilt()) {
             continue;
         }
-        if (used_this_session.erase(pipeline) != 0) {
-            used_and_evicted.insert(it->first.Hash());
+        const bool recent = used_this_session.contains(pipeline.get()) ||
+                            used_pipelines.contains(key.Hash());
+        candidates.push_back({&key, pipeline.get(), pipeline->LastUse(), recent});
+    }
+    std::ranges::sort(candidates, [](const Candidate& lhs, const Candidate& rhs) {
+        if (lhs.recent != rhs.recent) {
+            return !lhs.recent;
+        }
+        return lhs.last_use < rhs.last_use;
+    });
+    size_t remaining = live;
+    for (const Candidate& candidate : candidates) {
+        if (remaining <= target) {
+            break;
+        }
+        const u64 hash = candidate.key->Hash();
+        auto it = graphics_cache.find(*candidate.key);
+        if (it == graphics_cache.end()) {
+            continue;
+        }
+        if (used_this_session.erase(candidate.pipeline) != 0) {
+            used_and_evicted.insert(hash);
         }
         evicted_pipelines.emplace_back(tick, std::move(it->second));
-        it = graphics_cache.erase(it);
+        graphics_cache.erase(it);
         ++evicted;
+        --remaining;
     }
     if (evicted == 0) {
         return;
@@ -1074,8 +1191,178 @@ void PipelineCache::EvictUnusedPipelines() {
             pipeline->ClearTransitions();
         }
     }
-    LOG_INFO(Render_Vulkan, "Evicted {} graphics pipelines unused for {} frames, {} left", evicted,
-             EvictAfterFrames, graphics_cache.size());
+    LOG_INFO(Render_Vulkan,
+             "Evicted {} graphics pipelines over the {:.0f} MB budget, {} left", evicted,
+             budget.pipelines * 450.0 / 1024.0, graphics_cache.size());
+}
+
+bool PipelineCache::DeviceSupportsKey(const GraphicsPipelineCacheKey& key) const {
+    if ((key.state.extended_dynamic_state != 0) !=
+            dynamic_features.has_extended_dynamic_state ||
+        (key.state.extended_dynamic_state_2 != 0) !=
+            dynamic_features.has_extended_dynamic_state_2 ||
+        (key.state.extended_dynamic_state_2_logic_op != 0) !=
+            dynamic_features.has_extended_dynamic_state_2_logic_op ||
+        (key.state.extended_dynamic_state_3_blend != 0) !=
+            dynamic_features.has_extended_dynamic_state_3_blend ||
+        (key.state.extended_dynamic_state_3_enables != 0) !=
+            dynamic_features.has_extended_dynamic_state_3_enables ||
+        (key.state.color_write_enable_dynamic != 0) !=
+            dynamic_features.has_color_write_enable ||
+        (key.state.dynamic_vertex_input != 0) !=
+            dynamic_features.has_dynamic_vertex_input) {
+        return false;
+    }
+    const bool requests_provoking_last = key.state.provoking_vertex_last != 0;
+    if (requests_provoking_last && !dynamic_features.has_provoking_vertex_last_mode) {
+        return false;
+    }
+    if (key.state.xfb_enabled != 0 && requests_provoking_last &&
+        !dynamic_features.has_provoking_vertex_tf_preserve) {
+        return false;
+    }
+    return true;
+}
+
+void PipelineCache::PrefetchListedPipelines(const GraphicsEnvironments& environments) {
+    // The list holds states seen for these exact shaders. They are only buildable from a snapshot:
+    // an environment reads live Maxwell registers while it is translated.
+    std::vector<GraphicsPipelineCacheKey> keys;
+    {
+        PipelineListGraphicsKey lookup{};
+        lookup.unique_hashes = graphics_key.unique_hashes;
+        lookup.state = graphics_key.state;
+        const auto listed = keylist.Siblings(lookup);
+        if (listed.empty()) {
+            return;
+        }
+        std::scoped_lock lock{prefetch_mutex};
+        constexpr size_t MaxPendingPipelines = 256;
+        constexpr size_t MaxPipelinesPerKey = 16;
+        if (prefetch_pending.size() >= MaxPendingPipelines) {
+            return;
+        }
+        for (const auto& listed_key : listed) {
+            GraphicsPipelineCacheKey key{};
+            key.unique_hashes = listed_key.unique_hashes;
+            key.state = listed_key.state;
+            key.state.driver_id = dynamic_features.driver_id;
+            key.state.driver_version = dynamic_features.driver_version;
+            if (!DeviceSupportsKey(key) || graphics_cache.contains(key)) {
+                continue;
+            }
+            const u64 hash = key.Hash();
+            if (prefetch_failed.contains(hash) || !prefetch_pending.insert(hash).second) {
+                continue;
+            }
+            keys.push_back(key);
+            if (keys.size() >= MaxPipelinesPerKey) {
+                break;
+            }
+        }
+    }
+    if (keys.empty()) {
+        return;
+    }
+
+    std::ostringstream stream{std::ios::binary};
+    u32 num_envs{};
+    for (size_t index = 0; index < graphics_key.unique_hashes.size(); ++index) {
+        if (graphics_key.unique_hashes[index] == 0) {
+            continue;
+        }
+        // Task and mesh programs are not rebuildable from this snapshot: their mesh registers are
+        // not part of the environment format (the boot loader skips them for the same reason).
+        const Shader::Stage stage{environments.envs[index].ShaderStage()};
+        if (stage == Shader::Stage::Task || stage == Shader::Stage::Mesh ||
+            !environments.envs[index].CanBeSerialized()) {
+            return;
+        }
+        ++num_envs;
+    }
+    stream.write(reinterpret_cast<const char*>(&num_envs), sizeof(num_envs));
+    for (size_t index = 0; index < graphics_key.unique_hashes.size(); ++index) {
+        if (graphics_key.unique_hashes[index] != 0) {
+            environments.envs[index].Serialize(stream);
+        }
+    }
+
+    LOG_INFO(Render_Vulkan, "Prefetching {} listed pipelines for known shaders {:016x}",
+             keys.size(), graphics_key.Hash());
+    workers.QueueWork([this, keys = std::move(keys), snapshot = stream.str()]() mutable {
+        std::vector<std::pair<GraphicsPipelineCacheKey, std::unique_ptr<GraphicsPipeline>>> built;
+        try {
+            std::istringstream stream{snapshot, std::ios::binary};
+            u32 num_envs{};
+            stream.read(reinterpret_cast<char*>(&num_envs), sizeof(num_envs));
+            std::vector<FileEnvironment> envs(num_envs);
+            for (FileEnvironment& env : envs) {
+                env.Deserialize(stream);
+            }
+            ShaderPools pools;
+            boost::container::static_vector<Shader::Environment*, 5> env_ptrs;
+            for (FileEnvironment& env : envs) {
+                env_ptrs.push_back(&env);
+            }
+            for (GraphicsPipelineCacheKey& key : keys) {
+                pools.ReleaseContents();
+                built.emplace_back(
+                    key, CreateGraphicsPipeline(pools, key, MakeSpan(env_ptrs), nullptr, false));
+            }
+        } catch (const std::ios_base::failure& exception) {
+            LOG_WARNING(Render_Vulkan, "Prefetch snapshot is unreadable: {}", exception.what());
+            std::scoped_lock lock{prefetch_mutex};
+            for (const GraphicsPipelineCacheKey& key : keys) {
+                prefetch_pending.erase(key.Hash());
+            }
+            return;
+        }
+        if (!pipeline_cache_filename.empty()) {
+            for (const auto& [key, pipeline] : built) {
+                if (!pipeline) {
+                    continue;
+                }
+                serialization_thread.QueueWork([filename = pipeline_cache_filename,
+                                                envs = snapshot, key] {
+                    VideoCommon::AppendPipelineRecord(
+                        envs, std::span(reinterpret_cast<const char*>(&key), sizeof(key)), filename,
+                        CACHE_VERSION);
+                });
+            }
+        }
+        std::scoped_lock lock{prefetch_mutex};
+        for (auto& entry : built) {
+            prefetched_pipelines.push_back(std::move(entry));
+        }
+    });
+}
+
+void PipelineCache::DrainPrefetchedPipelines() {
+    std::vector<std::pair<GraphicsPipelineCacheKey, std::unique_ptr<GraphicsPipeline>>> built;
+    {
+        std::scoped_lock lock{prefetch_mutex};
+        built.swap(prefetched_pipelines);
+    }
+    size_t added{};
+    for (auto& [key, pipeline] : built) {
+        const u64 hash = key.Hash();
+        {
+            std::scoped_lock lock{prefetch_mutex};
+            prefetch_pending.erase(hash);
+        }
+        if (!pipeline || graphics_cache.contains(key)) {
+            if (!pipeline) {
+                prefetch_failed.insert(hash);
+            }
+            continue;
+        }
+        pipeline->MarkUsed(frame_count);
+        graphics_cache.emplace(key, std::move(pipeline));
+        ++added;
+    }
+    if (added != 0) {
+        LOG_INFO(Render_Vulkan, "Prefetched {} listed pipelines", added);
+    }
 }
 
 GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) const noexcept {
@@ -1328,6 +1615,15 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline() {
     main_pools.ReleaseContents();
     auto pipeline{
         CreateGraphicsPipeline(main_pools, graphics_key, environments.Span(), nullptr, true)};
+    if (pipeline) {
+        PipelineListGraphicsKey listed{};
+        listed.unique_hashes = graphics_key.unique_hashes;
+        listed.state = graphics_key.state;
+        keylist.RecordGraphics(std::move(listed));
+        if (keylist_loaded && prefetch_enabled) {
+            PrefetchListedPipelines(environments);
+        }
+    }
     if (!pipeline || pipeline_cache_filename.empty()) {
         return pipeline;
     }

@@ -1,0 +1,11 @@
+[package]
+name = "shader-scan"
+version = "0.1.0"
+edition = "2021"
+description = "Decode NVN2 shader containers from a NUP without booting a game"
+
+[dependencies]
+anyhow = "1"
+memchr = "2"
+sha2 = "0.10"
+zstd = { version = "0.13", features = ["zstdmt"] }

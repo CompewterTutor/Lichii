@@ -113,6 +113,23 @@ TOOLS = [
             },
         },
     },
+    {
+        "name": "scan_shaders",
+        "description": "Scans mapped guest memory for native Ampere program address maps "
+                       "(NEDENMAP) and writes a window ending after each map to the dump "
+                       "directory, with a JSONL manifest. Use it to capture the shaders a "
+                       "loaded area has decompressed, before their first draw.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "max_hits": {"type": "integer", "minimum": 1, "maximum": 100000},
+                "before_kb": {"type": "integer", "minimum": 0, "maximum": 16384},
+                "after_kb": {"type": "integer", "minimum": 0, "maximum": 16384},
+                "magic": {"type": "string"},
+                "width": {"type": "integer", "minimum": 1, "maximum": 8},
+            },
+        },
+    },
 ]
 
 TOOL_NAMES = {tool["name"] for tool in TOOLS}
