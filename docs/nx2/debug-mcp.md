@@ -337,6 +337,27 @@ timed by `g_nx2_present_count`, not wall time, so a slow frame cannot shift the 
 `input` call stops the replay, and the service stops it on shutdown. Frames are a minimum: a step
 that asks for a frame the game skips takes longer, exactly as a player's input would.
 
+### Recording and replaying input
+
+`input_record {name?, stop?}` stores every input the server applies, each with the present count
+it was applied at. Stopping writes `<dump dir>/<name>.json`:
+
+```json
+{"version": 1, "title": "...", "program_id": "0400486024DEC000", "start_present": 812,
+ "frames": 240, "events": [{"present": 812, "buttons": "0000000000000009",
+                             "left": [0, 32767], "right": [0, 0]}]}
+```
+
+`input_playback {name, absolute?}` replays it on the present-count clock. Relative playback
+(default) keeps the recorded spacing from the moment it starts, so the same recording works on a
+fresh boot; absolute playback waits for the recorded present numbers, which only matches inside the
+same boot. Either way a later `input` call, a new playback or shutdown stops it.
+
+Determinism: input timing is exact in frames, but the emulator is not a bit-exact machine. Threads,
+GPU scheduling and driver behaviour still vary, so two runs with the same recording can diverge
+after enough frames. For A/B tests, keep both runs on the same boot starting point and compare the
+first divergence with pause, step and a screenshot of the same present.
+
 ## Memory access (phase 1.6.3)
 
 `read_guest_memory {address, size}` and `write_guest_memory {address, bytes_base64, confirm}`

@@ -65,6 +65,23 @@ struct ToolState {
     /// Replays an injected input sequence, timed by presents. Joined when the service stops.
     std::thread input_thread;
     std::atomic<bool> input_stop{};
+
+    /// Input recording: every state applied through the debug server, with its present count.
+    struct RecordedEvent {
+        u64 present{};
+        u64 buttons{};
+        bool has_sticks{};
+        s32 left_x{};
+        s32 left_y{};
+        s32 right_x{};
+        s32 right_y{};
+    };
+    std::mutex record_mutex;
+    bool recording{};
+    u64 record_start{};
+    std::string record_name;
+    std::vector<RecordedEvent> recorded;
+    u64 replay_index{};
 };
 
 namespace {
@@ -307,9 +324,149 @@ InjectedInput ParseInput(const json& step) {
     return input;
 }
 
-void ApplyInput(const InjectedInput& input) {
+void StopInputThread(ToolState& state);
+
+void ApplyInput(ToolState& state, const InjectedInput& input) {
+    if (state.recording) {
+        std::scoped_lock lock{state.record_mutex};
+        if (state.recording) {
+            state.recorded.push_back({.present = Presents(),
+                                      .buttons = input.buttons,
+                                      .has_sticks = input.has_sticks,
+                                      .left_x = input.left_x,
+                                      .left_y = input.left_y,
+                                      .right_x = input.right_x,
+                                      .right_y = input.right_y});
+        }
+    }
     Core::HID::DebugInput::Set(input.buttons, input.left_x, input.left_y, input.right_x,
                                input.right_y, input.has_sticks);
+}
+
+/// Writes the recorded events as one JSON file inside the dump directory.
+std::filesystem::path SaveRecording(ToolState& state) {
+    const auto directory = state.dump_directory;
+    std::filesystem::create_directories(directory);
+    const auto path = directory / (state.record_name + ".json");
+    json events = json::array();
+    for (const ToolState::RecordedEvent& event : state.recorded) {
+        json entry = {{"present", event.present}, {"buttons", Hex(event.buttons)}};
+        if (event.has_sticks) {
+            entry["left"] = json::array({event.left_x, event.left_y});
+            entry["right"] = json::array({event.right_x, event.right_y});
+        }
+        events.push_back(std::move(entry));
+    }
+    json file = {
+        {"version", 1},
+        {"title", state.title},
+        {"program_id", fmt::format("{:016X}", state.program_id)},
+        {"start_present", state.record_start},
+        {"frames", state.recorded.empty() ? 0 : state.recorded.back().present - state.record_start},
+        {"events", std::move(events)},
+    };
+    std::ofstream stream{path, std::ios::binary | std::ios::trunc};
+    stream << file.dump(2) << '\n';
+    if (!stream) {
+        throw std::runtime_error{fmt::format("cannot write {}", path.generic_string())};
+    }
+    return path;
+}
+
+json InputRecord(ToolState& state, const json& params) {
+    if (params.value("stop", false)) {
+        std::scoped_lock lock{state.record_mutex};
+        if (!state.recording) {
+            throw std::runtime_error{"no recording is running"};
+        }
+        state.recording = false;
+        const auto path = SaveRecording(state);
+        return {{"path", path.generic_string()},
+                {"events", state.recorded.size()},
+                {"start_present", state.record_start}};
+    }
+    std::scoped_lock lock{state.record_mutex};
+    state.record_name = params.value("name", fmt::format("input-{}-{:03}", state.session,
+                                                         ++state.replay_index));
+    state.recorded.clear();
+    state.record_start = Presents();
+    state.recording = true;
+    return {{"recording", true}, {"name", state.record_name}, {"start_present", state.record_start}};
+}
+
+json InputPlayback(ToolState& state, const json& params) {
+    const std::string name = params.value("name", std::string{});
+    if (name.empty() || name.find('/') != std::string::npos ||
+        name.find('\\') != std::string::npos || name.find("..") != std::string::npos) {
+        throw std::runtime_error{"name is a recording in the dump directory, without a path"};
+    }
+    const auto path = state.dump_directory / (name + ".json");
+    std::ifstream stream{path, std::ios::binary};
+    if (!stream) {
+        throw std::runtime_error{fmt::format("no recording {} in {}", name,
+                                             state.dump_directory.generic_string())};
+    }
+    json file = json::parse(stream);
+    const u64 recorded_start = file.value("start_present", u64{0});
+    const bool absolute = params.value("absolute", false);
+    json events = file.at("events");
+    if (events.empty()) {
+        throw std::runtime_error{"the recording has no events"};
+    }
+    std::vector<ToolState::RecordedEvent> steps;
+    for (const json& entry : events) {
+        ToolState::RecordedEvent event{};
+        event.present = entry.at("present").get<u64>();
+        event.buttons = ParseButtons(entry.at("buttons"));
+        if (entry.contains("left")) {
+            event.has_sticks = true;
+            event.left_x = entry.at("left")[0].get<s32>();
+            event.left_y = entry.at("left")[1].get<s32>();
+            event.right_x = entry.at("right")[0].get<s32>();
+            event.right_y = entry.at("right")[1].get<s32>();
+        }
+        steps.push_back(event);
+    }
+    const u64 duration = steps.back().present - recorded_start;
+    const u64 absolute_start = steps.front().present;
+
+    std::scoped_lock lock{state.control_mutex};
+    StopInputThread(state);
+    state.input_stop.store(false, std::memory_order_relaxed);
+    state.input_thread = std::thread{[&state, steps = std::move(steps), absolute,
+                                      recorded_start, absolute_start] {
+        // Relative playback keeps the recorded spacing from the moment it starts; absolute
+        // playback waits for the frame numbers the recording saw, which only matches in the same
+        // boot.
+        u64 base{};
+        if (absolute) {
+            while (Presents() < absolute_start && !state.input_stop.load(std::memory_order_relaxed) &&
+                   !state.stopping.load(std::memory_order_relaxed)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds{1});
+            }
+            base = recorded_start;
+        } else {
+            base = Presents();
+        }
+        for (const ToolState::RecordedEvent& event : steps) {
+            const u64 target = base + (event.present - recorded_start);
+            while (Presents() < target && !state.input_stop.load(std::memory_order_relaxed) &&
+                   !state.stopping.load(std::memory_order_relaxed)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds{1});
+            }
+            if (state.input_stop.load(std::memory_order_relaxed) ||
+                state.stopping.load(std::memory_order_relaxed)) {
+                break;
+            }
+            Core::HID::DebugInput::Set(event.buttons, event.left_x, event.left_y, event.right_x,
+                                       event.right_y, event.has_sticks);
+        }
+        Core::HID::DebugInput::Clear();
+    }};
+    return {{"name", name},
+            {"events", steps.size()},
+            {"frames", duration},
+            {"mode", absolute ? "absolute" : "relative"}};
 }
 
 void StopInputThread(ToolState& state) {
@@ -327,7 +484,7 @@ json Input(ToolState& state, const json& params) {
         return {{"active", false}};
     }
     const InjectedInput input = ParseInput(params);
-    ApplyInput(input);
+    ApplyInput(state, input);
     return {{"active", true},
             {"buttons", Hex(input.buttons)},
             {"sticks", input.has_sticks}};
@@ -353,7 +510,7 @@ json InputSequence(ToolState& state, const json& params) {
                 state.stopping.load(std::memory_order_relaxed)) {
                 break;
             }
-            ApplyInput(ParseInput(step));
+            ApplyInput(state, ParseInput(step));
             const u64 frames = step.at("frames").get<u64>();
             const u64 target = Presents() + frames;
             while (Presents() < target && !state.input_stop.load(std::memory_order_relaxed) &&
@@ -818,6 +975,8 @@ Handlers MakeHandlers(const std::shared_ptr<ToolState>& state) {
         {"write_guest_memory", handler(WriteGuestMemory)},
         {"input", handler(Input)},
         {"input_sequence", handler(InputSequence)},
+        {"input_record", handler(InputRecord)},
+        {"input_playback", handler(InputPlayback)},
         {"read_gpu_memory", handler(ReadGpuMemory)},
         {"write_gpu_memory", handler(WriteGpuMemory)},
     };

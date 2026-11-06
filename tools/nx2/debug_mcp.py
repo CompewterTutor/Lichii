@@ -208,6 +208,35 @@ TOOLS = [
         },
     },
     {
+        "name": "input_record",
+        "description": "Records every input the debug server applies, with the present count it "
+                       "was applied at. Start with {name?}, stop with {stop: true}; the stop reply "
+                       "names the JSON file in the dump directory. Replaying that file later gives "
+                       "the same inputs at the same frame offsets.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "File stem, default input-<session>-<n>."},
+                "stop": {"type": "boolean"},
+            },
+        },
+    },
+    {
+        "name": "input_playback",
+        "description": "Replays a recording from the dump directory. Relative (default) keeps "
+                       "the recorded frame spacing from the moment it starts, so it works across "
+                       "boots; absolute waits for the recorded frame numbers, which only matches "
+                       "in the same boot. Stops when another input call arrives.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "absolute": {"type": "boolean"},
+            },
+            "required": ["name"],
+        },
+    },
+    {
         "name": "read_guest_memory",
         "description": "Reads application memory (CPU virtual addresses) and returns the bytes "
                        "as base64. Fails on a range that is not fully mapped instead of returning "
