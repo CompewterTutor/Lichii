@@ -295,3 +295,30 @@ Numbers here come from two OoT sessions on the local machine (build `nx2-99ac3d5
   cache, or treating key-list environments as the only pipeline source.
 - Re-check when: lowering stops specializing on constant buffer contents, or a runtime-state
   synthesizer exists.
+
+## 2026-11-06 - Key-list tooling, and what actually splits OoT's pipelines
+
+- Source: `tools/nx2/keylist_tool.py` (inspect, merge, programs, diff) over the OoT key list in
+  `%APPDATA%/eden/cache/shader/0400486024dec000/keylist.bin`, written by the budget-eviction
+  session.
+- Learning: the list had 1,778 graphics and 195 compute rows, 1,805 distinct shader programs and
+  1,164 distinct shader sets: 858 of the states sit on sets that already had another state, and one
+  3-stage set carries 36 states. The format is `lchkeyls` v1 and rows are self-describing, so the
+  tooling is a plain file reader (`tools/nx2/keylist_tool.py`).
+- Learning: measured `FixedPipelineState` offsets for the stored 0x70-byte prefix are 0x00 raw1
+  flags, 0x04 raw2 (depth/alpha flags), 0x08 color formats, 0x10 driver id/version (always zero in
+  the file), 0x18 alpha ref, 0x1c point size, 0x20 viewport swizzles, 0x40 `attribute_types`,
+  0x48 dynamic state, 0x50 blend attachments. `Size()` picks the prefix from the dynamic-state
+  features; OoT's rows all store 0x70 bytes, the `dynamic_vertex_input` branch that ends before
+  `attributes`, and transform feedback stores the whole struct.
+- Learning: the state bytes that split one shader set are dominated by `attribute_types`
+  (389/339/295/267 states across the top sets), then raw2 depth/alpha flags (260/259), color
+  formats (259), dynamic state (167) and blend attachments (25). That is real variation, not noise:
+  `attribute_types` feeds `Shader::AttributeType` in `MakeRuntimeInfo`, so integer versus float
+  vertex inputs compile different shaders and cannot be dropped from the key.
+- Learning: `driver_id`/`driver_version` are zero in every stored row, so lists written here are
+  portable as intended.
+- Applies to: phase 1.4. A shared list is only worth shipping if the rows are states the game
+  really drew, which the diff output now makes checkable before export.
+- Re-check when: the dynamic-state surface changes (a new `Size()` branch) or `FixedPipelineState`
+  gains fields inside the prefix.

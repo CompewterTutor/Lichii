@@ -402,16 +402,18 @@
         {
           "id": "1.4.2",
           "title": "Merge tool and per-title list workflow",
-          "status": "pending",
-          "goal": "Add a small tool that verifies a contribution file's title, format and row sanity, merges it into the per-title list, and reports added and rejected rows. Document where players put a shared list.",
+          "status": "in_progress",
+          "goal": "Make per-title lists shareable. The reading side exists: tools/nx2/keylist_tool.py inspects, merges, lists programs and reports which state bytes split one shader set. Remaining: choose where a fetched list lives, how the emulator prefers it over the local one, and how a row proves it was drawn rather than only cached.",
           "touches": [
-            "tools/nx2/",
+            "tools/nx2/keylist_tool.py",
+            "src/video_core/renderer_vulkan/vk_pipeline_keylist.cpp",
             "docs/shader-precompile/learnings.md"
           ],
           "success": [
-            "Merge refuses foreign, truncated or wrong-title files",
-            "Added row counts reported",
-            "Documented path is picked up by the emulator without extra configuration"
+            "Two lists merge without losing or duplicating rows",
+            "A merged list loads in the emulator and builds the listed states at boot",
+            "A list can be inspected offline for stage coverage and state splits",
+            "No list carries code, a driver id or a resource, only identifiers"
           ],
           "tests": "Merge a good file, a corrupted file and a file for another title; expect success, refusal and refusal.",
           "prerequisites": [
@@ -420,7 +422,8 @@
           "complexity": "Medium",
           "agent": "mid_dev_agent",
           "created_at": "2026-11-06T00:00:00Z",
-          "updated_at": "2026-11-06T00:00:00Z"
+          "updated_at": "2026-11-06T23:20:08Z",
+          "changelog": "keylist_tool.py added (inspect/merge/programs/diff) with 12 unit tests; format and state-layout offsets measured on a real OoT list."
         }
       ]
     },
