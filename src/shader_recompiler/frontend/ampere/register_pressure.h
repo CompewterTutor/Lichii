@@ -55,6 +55,7 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
     case 0x923:
     case 0x820:
     case 0xa20:
+    case 0xc20:
     case 0x421:
         operand(16);
         operand(24);
@@ -73,13 +74,23 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
         break;
     case 0xc17:
     case 0x817:
+    case 0xa17:
         operand(16);
+        operand(24);
+        break;
+    case 0x217:
+        operand(16);
+        operand(24);
+        operand(32);
+        break;
+    case 0x3c2: // R2UR reads one guest register; its destination is a uniform register.
         operand(24);
         break;
     case 0xa24:
     case 0xa23:
     case 0x623:
     case 0x423:
+    case 0xc23:
         operand(16);
         operand(24);
         operand(64);
@@ -170,6 +181,18 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
         operand(24);
         operand(64);
         break;
+    case 0x219: // Register shift: the amount is a guest register in bits 32-39.
+        operand(16);
+        operand(24);
+        operand(32);
+        operand(64);
+        break;
+    case 0xa19:
+    case 0xc19:
+        operand(16);
+        operand(24);
+        operand(64);
+        break;
     case 0x210:
     case 0x211:
     case 0x212:
@@ -179,6 +202,7 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
         operand(64);
         break;
     case 0xa11:
+    case 0x811: // LEA with an immediate third addend lives in words[1], not in a register.
         operand(16);
         operand(24);
         operand(64);

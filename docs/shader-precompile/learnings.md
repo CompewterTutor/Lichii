@@ -431,3 +431,24 @@ Numbers here come from two OoT sessions on the local machine (build `nx2-99ac3d5
   unrepresentable, and the Ampere field alone does not settle it; a decode with nvdisasm on the
   captured instruction, or a visual A/B of the affected compute shaders, would.
 - Applies to: phase 1.3.3, which is now in progress rather than a single change.
+
+## 2026-11-06 - Register shadows need an operand list per opcode, and OoT names several that were missing
+
+- Symptom: `native register shadowing mode`. When a native instruction names a guest register at or
+  above the lowering's high-uniform base, `PrepareRegisterPressure` re-expands it with low shadow
+  copies, but only for opcodes it knows: everything else hits the `default:` branch and the whole
+  program is rejected.
+- Fixed: added operand lists for `0x811` (LEA with an immediate addend, which lives in words[1] and
+  is not a register), `0xc20` (FMUL with a uniform source), `0x217`/`0xa17` (IMNMX register and
+  cbuf forms), `0x219`/`0xa19`/`0xc19` (register, constant and uniform shifts), `0xc23` (FFMA with
+  a uniform addend) and `0x3c2` (R2UR, whose destination is a uniform register, so only bits 24-31
+  is a shadow candidate).
+- Learning: the pass needs the same operand knowledge the lowering has, and the two had drifted.
+  Each of these was found by decoding the failing instruction from the sweep, asking which bit
+  fields the lowering reads as guest registers, and listing only those; listing a uniform register
+  index or an immediate field as a GPR would reserve the wrong registers.
+- Result: 2 more of the 68 OoT programs lower completely (6 now), and the two programs that failed
+  here walk past several such instructions, so one opcode per program was not enough: expect the
+  remaining gaps to be reached only after several rounds.
+- Test: `src/tests/video_core/ampere_register_pressure.cpp` checks the captured LEA, FMUL, FFMA and
+  shift instructions plus synthesised IMNMX/R2UR cases, and that an unknown opcode still refuses.
