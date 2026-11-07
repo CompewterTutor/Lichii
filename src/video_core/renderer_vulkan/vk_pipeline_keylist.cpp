@@ -56,6 +56,66 @@ void WritePod(std::ostream& stream, const T& value) {
     stream.write(reinterpret_cast<const char*>(&value), sizeof(value));
 }
 
+using GraphicsRow = std::pair<u64, const PipelineListGraphicsKey*>;
+using ComputeRow = std::pair<u64, const PipelineListComputeKey*>;
+
+/// Writes sorted rows in the list format, replacing `file` through a temporary file.
+bool WriteRows(const std::filesystem::path& file, const std::vector<GraphicsRow>& graphics_rows,
+               const std::vector<ComputeRow>& compute_rows) {
+    const auto temporary = file.string() + ".tmp";
+    std::ofstream stream{temporary, std::ios::binary | std::ios::trunc};
+    if (!stream.is_open()) {
+        LOG_ERROR(Common_Filesystem, "Failed to open key list for writing: {}", file.string());
+        return false;
+    }
+    stream.write(MagicNumber.data(), MagicNumber.size());
+    WritePod(stream, FormatVersion);
+    for (const auto& [hash, key] : graphics_rows) {
+        const u8 kind = KindGraphics;
+        const u8 reserved{};
+        const u16 reserved16{};
+        const u32 state_size = static_cast<u32>(key->state.Size());
+        WritePod(stream, kind);
+        WritePod(stream, reserved);
+        WritePod(stream, reserved16);
+        WritePod(stream, hash);
+        for (const u64 unique_hash : key->unique_hashes) {
+            WritePod(stream, unique_hash);
+        }
+        WritePod(stream, state_size);
+        stream.write(reinterpret_cast<const char*>(&key->state), state_size);
+    }
+    for (const auto& [hash, key] : compute_rows) {
+        const u8 kind = KindCompute;
+        const u8 reserved{};
+        const u16 reserved16{};
+        WritePod(stream, kind);
+        WritePod(stream, reserved);
+        WritePod(stream, reserved16);
+        WritePod(stream, hash);
+        WritePod(stream, key->unique_hash);
+        WritePod(stream, key->shared_memory_size);
+        for (const u32 size : key->workgroup_size) {
+            WritePod(stream, size);
+        }
+    }
+    stream.close();
+    if (!stream) {
+        LOG_ERROR(Common_Filesystem, "Failed to write key list: {}", file.string());
+        std::error_code error;
+        std::filesystem::remove(temporary, error);
+        return false;
+    }
+    std::error_code error;
+    std::filesystem::rename(temporary, file, error);
+    if (error) {
+        LOG_ERROR(Common_Filesystem, "Failed to replace key list {}: {}", file.string(),
+                  error.message());
+        return false;
+    }
+    return true;
+}
+
 } // Anonymous namespace
 
 bool PipelineListGraphicsKey::operator==(const PipelineListGraphicsKey& rhs) const noexcept {
@@ -78,6 +138,14 @@ bool PipelineKeyList::Enabled() {
 }
 
 void PipelineKeyList::Load(const std::filesystem::path& file) {
+    LoadImpl(file, true);
+}
+
+void PipelineKeyList::LoadContribution(const std::filesystem::path& file) {
+    LoadImpl(file, false);
+}
+
+void PipelineKeyList::LoadImpl(const std::filesystem::path& file, bool mark_loaded) {
     std::ifstream stream{file, std::ios::binary};
     if (!stream.is_open()) {
         return;
@@ -128,6 +196,9 @@ void PipelineKeyList::Load(const std::filesystem::path& file) {
                 continue;
             }
             const u64 hash = stored_hash;
+            if (mark_loaded) {
+                loaded_graphics.insert(hash);
+            }
             if (graphics.contains(hash)) {
                 continue;
             }
@@ -150,6 +221,9 @@ void PipelineKeyList::Load(const std::filesystem::path& file) {
                 }
                 continue;
             }
+            if (mark_loaded) {
+                loaded_compute.insert(stored_hash);
+            }
             if (compute.emplace(stored_hash, key).second) {
                 ++added;
             }
@@ -163,8 +237,8 @@ void PipelineKeyList::Load(const std::filesystem::path& file) {
 }
 
 bool PipelineKeyList::Save(const std::filesystem::path& file) const {
-    std::vector<std::pair<u64, const PipelineListGraphicsKey*>> graphics_rows;
-    std::vector<std::pair<u64, const PipelineListComputeKey*>> compute_rows;
+    std::vector<GraphicsRow> graphics_rows;
+    std::vector<ComputeRow> compute_rows;
     {
         std::scoped_lock lock{mutex};
         graphics_rows.reserve(graphics.size());
@@ -176,61 +250,36 @@ bool PipelineKeyList::Save(const std::filesystem::path& file) const {
             compute_rows.emplace_back(hash, &key);
         }
     }
-    std::ranges::sort(graphics_rows, {}, &std::pair<u64, const PipelineListGraphicsKey*>::first);
-    std::ranges::sort(compute_rows, {}, &std::pair<u64, const PipelineListComputeKey*>::first);
+    std::ranges::sort(graphics_rows, {}, &GraphicsRow::first);
+    std::ranges::sort(compute_rows, {}, &ComputeRow::first);
+    return WriteRows(file, graphics_rows, compute_rows);
+}
 
-    const auto temporary = file.string() + ".tmp";
-    std::ofstream stream{temporary, std::ios::binary | std::ios::trunc};
-    if (!stream.is_open()) {
-        LOG_ERROR(Common_Filesystem, "Failed to open key list for writing: {}", file.string());
-        return false;
-    }
-    stream.write(MagicNumber.data(), MagicNumber.size());
-    WritePod(stream, FormatVersion);
-    for (const auto& [hash, key] : graphics_rows) {
-        const u8 kind = KindGraphics;
-        const u8 reserved{};
-        const u16 reserved16{};
-        const u32 state_size = static_cast<u32>(key->state.Size());
-        WritePod(stream, kind);
-        WritePod(stream, reserved);
-        WritePod(stream, reserved16);
-        WritePod(stream, hash);
-        for (const u64 unique_hash : key->unique_hashes) {
-            WritePod(stream, unique_hash);
+bool PipelineKeyList::SaveContribution(const std::filesystem::path& file) const {
+    std::vector<GraphicsRow> graphics_rows;
+    std::vector<ComputeRow> compute_rows;
+    {
+        std::scoped_lock lock{mutex};
+        for (const auto& [hash, key] : graphics) {
+            if (!loaded_graphics.contains(hash)) {
+                graphics_rows.emplace_back(hash, &key);
+            }
         }
-        WritePod(stream, state_size);
-        stream.write(reinterpret_cast<const char*>(&key->state), state_size);
-    }
-    for (const auto& [hash, key] : compute_rows) {
-        const u8 kind = KindCompute;
-        const u8 reserved{};
-        const u16 reserved16{};
-        WritePod(stream, kind);
-        WritePod(stream, reserved);
-        WritePod(stream, reserved16);
-        WritePod(stream, hash);
-        WritePod(stream, key->unique_hash);
-        WritePod(stream, key->shared_memory_size);
-        for (const u32 size : key->workgroup_size) {
-            WritePod(stream, size);
+        for (const auto& [hash, key] : compute) {
+            if (!loaded_compute.contains(hash)) {
+                compute_rows.emplace_back(hash, &key);
+            }
         }
     }
-    stream.close();
-    if (!stream) {
-        LOG_ERROR(Common_Filesystem, "Failed to write key list: {}", file.string());
+    if (graphics_rows.empty() && compute_rows.empty()) {
+        // A stale contribution from an earlier session would be merged as if this one found it.
         std::error_code error;
-        std::filesystem::remove(file.string() + ".tmp", error);
-        return false;
+        std::filesystem::remove(file, error);
+        return true;
     }
-    std::error_code error;
-    std::filesystem::rename(temporary, file, error);
-    if (error) {
-        LOG_ERROR(Common_Filesystem, "Failed to replace key list {}: {}", file.string(),
-                  error.message());
-        return false;
-    }
-    return true;
+    std::ranges::sort(graphics_rows, {}, &GraphicsRow::first);
+    std::ranges::sort(compute_rows, {}, &ComputeRow::first);
+    return WriteRows(file, graphics_rows, compute_rows);
 }
 
 void PipelineKeyList::RecordGraphics(PipelineListGraphicsKey key) {
@@ -287,6 +336,22 @@ size_t PipelineKeyList::GraphicsCount() const {
 size_t PipelineKeyList::ComputeCount() const {
     std::scoped_lock lock{mutex};
     return compute.size();
+}
+
+size_t PipelineKeyList::ContributionRows() const {
+    std::scoped_lock lock{mutex};
+    size_t rows{};
+    for (const auto& [hash, key] : graphics) {
+        if (!loaded_graphics.contains(hash)) {
+            ++rows;
+        }
+    }
+    for (const auto& [hash, key] : compute) {
+        if (!loaded_compute.contains(hash)) {
+            ++rows;
+        }
+    }
+    return rows;
 }
 
 } // namespace Vulkan

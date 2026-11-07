@@ -379,7 +379,7 @@
         {
           "id": "1.4.1",
           "title": "Split loaded rows from rows recorded this run",
-          "status": "pending",
+          "status": "done",
           "goal": "Track which rows came from the shared list and write only new rows to a contribution file, so merging is a union of verified rows rather than a whole-file replacement.",
           "touches": [
             "src/video_core/renderer_vulkan/vk_pipeline_keylist.cpp",
@@ -397,7 +397,8 @@
           "complexity": "Medium",
           "agent": "mid_dev_agent",
           "created_at": "2026-11-06T00:00:00Z",
-          "updated_at": "2026-11-06T00:00:00Z"
+          "updated_at": "2026-11-07T02:58:14Z",
+          "changelog": "PipelineKeyList tracks the hashes each Load brought in and SaveContribution writes only the rows no loaded list has (same format, sorted by key hash). A contribution is loaded back at boot as pending, so an unmerged file survives a session that adds nothing, and is removed when nothing is pending. Live A/B on OoT: with no list, contribution held all 1583 graphics + 195 compute rows; with the merged list loaded, status reported keylist_contribution 0 and no file was written. Four new unit tests cover the split, idempotent merging, the stale-file removal and a pending file surviving a session."
         },
         {
           "id": "1.4.2",
@@ -422,8 +423,8 @@
           "complexity": "Medium",
           "agent": "mid_dev_agent",
           "created_at": "2026-11-06T00:00:00Z",
-          "updated_at": "2026-11-06T23:20:08Z",
-          "changelog": "keylist_tool.py added (inspect/merge/programs/diff) with 12 unit tests; format and state-layout offsets measured on a real OoT list."
+          "updated_at": "2026-11-07T02:58:14Z",
+          "changelog": "keylist_tool.py added (inspect/merge/programs/diff) with 12 unit tests; format and state-layout offsets measured on a real OoT list. The emulator now writes keylist.contribution.bin with only the rows no loaded list had, and merging it with keylist_tool.py is a verified union (merging OoT parked + contribution gave +0 rows and the same 319,960-byte file). Remaining: where a fetched shared list lives and how it is preferred over the local one, and how a row proves it was drawn rather than cached."
         }
       ]
     },

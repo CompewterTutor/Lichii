@@ -369,3 +369,26 @@ Numbers here come from two OoT sessions on the local machine (build `nx2-99ac3d5
   override, the image differs, and `status.rejected` is empty afterwards.
 - Applies to: phases 1.6.1, 1.6.2, 1.6.3 and the verified part of 1.6.5 and 1.6.6.
 - Re-check when: motion or trigger input is exposed, or render overrides are added to screenshots.
+
+## 2026-11-06 - A session contributes only the rows a shared list is missing
+
+- Problem: `Save` rewrote `keylist.bin` with every known row, so two players collecting the same
+  title could only overwrite each other's file. Sharing needs a contribution, not a replacement.
+- Design: `PipelineKeyList` remembers which hashes each `Load` brought in. `SaveContribution`
+  writes the rows whose hash is in no loaded list, in the same format, sorted by key hash.
+  `LoadContribution` reads a pending file back without marking its rows as known, so an unmerged
+  contribution survives a later session that adds nothing; when nothing is pending the file is
+  removed instead of left stale.
+- Measured on OoT with the debug server: a boot with no list (list parked) recorded 1504 graphics
+  rows, and after loading the save 1583 graphics + 195 compute, with
+  `status.caches.keylist_contribution` equal to the row count. With the merged 1778-row list in
+  place, the same session reported `keylist_contribution: 0` and wrote no contribution file.
+- Measured merging: `keylist_tool.py merge` of the parked 1778-row list with that contribution
+  added 0 rows and produced a byte-identical 319,960-byte file, and merging twice stayed
+  identical, so the union is idempotent in practice and not only in the tests.
+- Learning: the key list lives under `cache/shader/<title id>/` (shader cache), not under a
+  `shader` folder at the data root, and it is written either on a 2-minute-used-pipeline trigger
+  or by the destructor, so a forced process kill loses the session's rows.
+- Applies to: phase 1.4.1, and it is the input 1.4.2 needs for a shared list.
+- Re-check when: a fetched list gets its own directory, since the contribution then has to name the
+  list it is missing rows from.

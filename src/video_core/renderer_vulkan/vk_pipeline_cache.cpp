@@ -717,6 +717,7 @@ void PipelineCache::SaveUsedPipelines() {
     used_pipelines_saved = std::chrono::steady_clock::now();
     if (!keylist_filename.empty() && PipelineKeyList::Enabled()) {
         keylist.Save(keylist_filename);
+        keylist.SaveContribution(keylist_contribution_filename);
     }
     // A session too short to say what the game uses (a boot to the menu) keeps the old list.
     constexpr size_t MinimumUsed = 64;
@@ -820,6 +821,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         }
         if (!keylist_filename.empty() && PipelineKeyList::Enabled()) {
             keylist.Save(keylist_filename);
+            keylist.SaveContribution(keylist_contribution_filename);
         }
     }
 
@@ -834,8 +836,12 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     used_pipelines_filename =
         VideoCommon::VersionedPipelineCachePath(base_dir, "vulkan_used", CACHE_VERSION);
     keylist_filename = base_dir / "keylist.bin";
+    keylist_contribution_filename = base_dir / "keylist.contribution.bin";
     if (PipelineKeyList::Enabled()) {
         keylist.Load(keylist_filename);
+        // Rows an earlier session added but nobody merged yet stay pending, so this session writes
+        // them out again instead of dropping them.
+        keylist.LoadContribution(keylist_contribution_filename);
     }
     used_pipelines = LoadUsedPipelines(used_pipelines_filename, MaxUsedPipelineAge(device));
     used_pipelines_saved = std::chrono::steady_clock::now();
@@ -1373,6 +1379,7 @@ VideoCore::RasterizerInterface::DebugCacheStats PipelineCache::GetDebugStats() {
     stats.compute = compute_cache.size();
     stats.keylist_graphics = keylist.GraphicsCount();
     stats.keylist_compute = keylist.ComputeCount();
+    stats.keylist_contribution = keylist.ContributionRows();
     stats.built = stat_built.load(std::memory_order_relaxed);
     stats.evicted = stat_evicted.load(std::memory_order_relaxed);
     stats.prefetched = stat_prefetched.load(std::memory_order_relaxed);

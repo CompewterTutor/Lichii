@@ -222,6 +222,9 @@ private:
     /// the version-suffixed cache and is the file players can share.
     PipelineKeyList keylist;
     std::filesystem::path keylist_filename;
+    /// <title>/keylist.contribution.bin: the rows no shared list has yet, so a collector can merge
+    /// them instead of replacing the list. Same format as the list itself.
+    std::filesystem::path keylist_contribution_filename;
     bool keylist_loaded{};
     bool prefetch_enabled{};
     mutable std::mutex prefetch_mutex;

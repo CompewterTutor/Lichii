@@ -121,3 +121,98 @@ TEST_CASE("A truncated row does not lose earlier rows", "[pipeline_keylist]") {
     loaded.Load(file);
     CHECK(loaded.GraphicsCount() == 1);
 }
+
+TEST_CASE("A contribution holds only rows no loaded list has", "[pipeline_keylist]") {
+    TempDir temp;
+    const auto shared = temp.path / "keylist.bin";
+    const auto contribution = temp.path / "keylist.contribution.bin";
+    const std::array<u64, 6> hashes{13, 14, 0, 0, 0, 0};
+
+    Vulkan::PipelineKeyList collector;
+    collector.RecordGraphics(GraphicsKey(hashes, 0x77));
+    REQUIRE(collector.Save(shared));
+
+    Vulkan::PipelineKeyList session;
+    session.Load(shared);
+    session.RecordGraphics(GraphicsKey(hashes, 0x77));
+    CHECK(session.ContributionRows() == 0);
+    session.RecordGraphics(GraphicsKey(hashes, 0x78));
+    session.RecordCompute({
+        .unique_hash = 0xdef,
+        .shared_memory_size = 4096,
+        .workgroup_size = {16, 16, 1},
+    });
+    CHECK(session.ContributionRows() == 2);
+    REQUIRE(session.SaveContribution(contribution));
+
+    Vulkan::PipelineKeyList merged;
+    merged.Load(shared);
+    merged.LoadContribution(contribution);
+    CHECK(merged.GraphicsCount() == 2);
+    CHECK(merged.ComputeCount() == 1);
+    CHECK(merged.Contains(GraphicsKey(hashes, 0x78)));
+    CHECK(merged.Contains(GraphicsKey(hashes, 0x77)));
+}
+
+TEST_CASE("Merging a contribution twice changes nothing", "[pipeline_keylist]") {
+    TempDir temp;
+    const auto shared = temp.path / "keylist.bin";
+    const auto contribution = temp.path / "keylist.contribution.bin";
+    const std::array<u64, 6> hashes{15, 16, 0, 0, 0, 0};
+
+    Vulkan::PipelineKeyList session;
+    session.RecordGraphics(GraphicsKey(hashes, 0x79));
+    REQUIRE(session.Save(shared));
+    REQUIRE(session.SaveContribution(contribution));
+
+    Vulkan::PipelineKeyList merged;
+    merged.Load(shared);
+    merged.Load(contribution);
+    const size_t once = merged.GraphicsCount();
+    merged.Load(contribution);
+    merged.Load(shared);
+    CHECK(merged.GraphicsCount() == once);
+}
+
+TEST_CASE("An empty contribution removes the stale file", "[pipeline_keylist]") {
+    TempDir temp;
+    const auto shared = temp.path / "keylist.bin";
+    const auto contribution = temp.path / "keylist.contribution.bin";
+    const std::array<u64, 6> hashes{17, 18, 0, 0, 0, 0};
+
+    Vulkan::PipelineKeyList first;
+    first.RecordGraphics(GraphicsKey(hashes, 0x7a));
+    REQUIRE(first.SaveContribution(contribution));
+    REQUIRE(std::filesystem::exists(contribution));
+
+    // A later session that loads the shared list adds nothing, so the pending file must not survive
+    // as if it were new.
+    Vulkan::PipelineKeyList second;
+    second.RecordGraphics(GraphicsKey(hashes, 0x7a));
+    REQUIRE(second.Save(shared));
+    Vulkan::PipelineKeyList third;
+    third.Load(shared);
+    CHECK(third.ContributionRows() == 0);
+    REQUIRE(third.SaveContribution(contribution));
+    CHECK_FALSE(std::filesystem::exists(contribution));
+}
+
+TEST_CASE("A pending contribution stays pending across sessions", "[pipeline_keylist]") {
+    TempDir temp;
+    const auto shared = temp.path / "keylist.bin";
+    const auto contribution = temp.path / "keylist.contribution.bin";
+    const std::array<u64, 6> hashes{19, 20, 0, 0, 0, 0};
+
+    {
+        Vulkan::PipelineKeyList first;
+        first.RecordGraphics(GraphicsKey(hashes, 0x7b));
+        REQUIRE(first.SaveContribution(contribution));
+    }
+    // Next session: the row is not in the shared list, so it is still worth contributing.
+    Vulkan::PipelineKeyList second;
+    second.Load(shared);
+    second.LoadContribution(contribution);
+    CHECK(second.ContributionRows() == 1);
+    REQUIRE(second.SaveContribution(contribution));
+    CHECK(std::filesystem::exists(contribution));
+}

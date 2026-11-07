@@ -16,7 +16,9 @@ those pipelines. Lists carry identifiers only: no shader code, SPIR-V, environme
 ## What works today
 
 - **Pipeline key lists.** Every pipeline the title builds is recorded into a per-title list, and
-  listed rows are rebuilt on background workers at boot. Verified on OoT.
+  listed rows are rebuilt on background workers at boot. Verified on OoT. A session also writes
+  `keylist.contribution.bin` with only the rows the loaded list was missing, so collecting for a
+  shared list is a merge (`tools/nx2/keylist_tool.py merge`) rather than a whole-file replacement.
 - **Budget eviction.** The pipeline cache keeps an LRU memory budget (1536 MB by default) instead of
   doing mass evictions on idle frames. Measured on OoT: 0 evictions in four minutes against 175
   before. `EDEN_NX2_PIPELINE_EVICT=legacy` restores the old policy (diagnostic switch, does not

@@ -16,6 +16,10 @@ the same title and build. The format is written by `PipelineKeyList::Save`
 Rows carry the hash the emulator computed for them; this tool keeps that hash and never invents
 one, so the emulator re-verifies every row it loads. A row whose state layout differs from the
 current build is dropped there, not here.
+
+`keylist.contribution.bin`, which the emulator writes next to a list, has the same format and
+holds only the rows no loaded list had. Merging it into the shared list is the normal way to
+publish what a session found; the merge is a union, so running it twice changes nothing.
 """
 
 import argparse

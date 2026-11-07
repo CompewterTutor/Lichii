@@ -28,6 +28,10 @@ New entries go under `## [Unreleased]`; `tools/ci/bump-version.sh` turns them in
 
 - `status` reports the pipeline cache counters (built, evicted, prefetched, prefetch failed) and the
   key-list row counts next to the boot and pacing fields.
+- A session now writes the pipelines no shared list has into `keylist.contribution.bin` next to the
+  list, so players collecting the same title can merge what they found instead of overwriting each
+  other's list. `keylist_tool.py merge` already unions them, and merging twice changes nothing.
+  `status.caches.keylist_contribution` says how many rows are waiting to be merged.
 
 ### Fixed
 
