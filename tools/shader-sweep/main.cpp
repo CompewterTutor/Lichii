@@ -21,6 +21,7 @@
 #include "shader_recompiler/environment.h"
 #include "shader_recompiler/frontend/ampere/lower_to_maxwell.h"
 
+#include "shader_recompiler/frontend/native/translate.h"
 #include "shader_recompiler/frontend/native/translate_program.h"
 #include "shader_recompiler/frontend/ampere/program_address_map.h"
 #include "shader_recompiler/frontend/ampere/program_capture.h"
@@ -666,9 +667,27 @@ int main(int argc, char** argv) {
                 diagnostic["implemented_opcodes"] = Shader::Native::ImplementedCount();
                 diagnostic["unimplemented_instructions"] = absent;
                 diagnostic["unimplemented"] = std::move(list);
-                diagnostic["status"] = missing.empty() ? "ok" : "blocked";
+
+                // The histogram says what is missing; translating for real says whether the forms
+                // in this program are among the ones the frontend can take.
+                Shader::ObjectPool<Shader::IR::Inst> pool{256};
+                Shader::IR::Block block{pool};
+                const auto translated = Shader::Native::TranslateBlock(env, block, native);
+                diagnostic["translated_instructions"] = block.size();
+                if (translated) {
+                    diagnostic["status"] = missing.empty() ? "ok" : "blocked";
+                    diagnostic["error"] = {{"code", "translation_incomplete"}};
+                } else {
+                    diagnostic["status"] = "blocked";
+                    diagnostic["stop_index"] = translated.error_index;
+                    diagnostic["stop_offset"] =
+                        translated.error_index * sizeof(Instruction);
+                    diagnostic["error"] = {{"code", "translation_failed"},
+                                           {"message", translated.error},
+                                           {"offset", translated.error_index * sizeof(Instruction)}};
+                }
                 std::cout << diagnostic.dump() << '\n';
-                return missing.empty() ? 0 : 1;
+                return translated ? 0 : 1;
             }
             diagnostic["phase"] = "lower";
             std::vector<u32> traps;

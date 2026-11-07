@@ -15,9 +15,12 @@ namespace {
 /// instruction: the ISA is undocumented, so "it looks like the Maxwell opcode" is not evidence.
 /// Currently only the opcodes with no operands at all, which keeps this honest until the first
 /// arithmetic family lands.
-constexpr std::array<u32, 2> Implemented{
+constexpr std::array<u32, 15> Implemented{
     0x918, // NOP
-    0x94d, // EXIT
+    0x220, 0x820, 0xa20,          // FMUL, register/immediate/cbuf second source
+    0x221, 0x421, 0x621, 0x821, 0xa21, // FADD
+    0x223, 0x423, 0x623, 0x823, 0xa23, // FFMA
+    0xf89, // SHFL with an immediate lane
 };
 
 } // Anonymous namespace

@@ -19,22 +19,20 @@ Instruction WithOpcode(u32 opcode) {
 
 TEST_CASE("Native frontend reports the opcodes it cannot translate", "[video_core][native]") {
     CHECK(Shader::Native::IsImplemented(0x918));  // NOP
-    CHECK(Shader::Native::IsImplemented(0x94d));  // EXIT
-    CHECK_FALSE(Shader::Native::IsImplemented(0x223));
+    CHECK(Shader::Native::IsImplemented(0x223));  // FFMA
+    CHECK_FALSE(Shader::Native::IsImplemented(0x94d)); // EXIT is control flow, not an opcode yet
 
-    const std::array code{WithOpcode(0x223), WithOpcode(0x223), WithOpcode(0x94d),
-                          WithOpcode(0x221)};
+    const std::array code{WithOpcode(0x94d), WithOpcode(0x94d), WithOpcode(0x918),
+                          WithOpcode(0xf89)};
     const auto missing = Shader::Native::Missing(code);
-    REQUIRE(missing.size() == 2);
-    CHECK(missing[0].opcode == 0x223); // most frequent first
+    REQUIRE(missing.size() == 1);
+    CHECK(missing[0].opcode == 0x94d); // most frequent first
     CHECK(missing[0].count == 2);
-    CHECK(missing[1].opcode == 0x221);
-    CHECK(missing[1].count == 1);
 }
 
 TEST_CASE("Zero padding is not an unimplemented opcode", "[video_core][native]") {
     // A raw allocation carries the program followed by zero words; they must not read as opcode 0.
-    const std::array code{WithOpcode(0x94d), WithOpcode(0x000), WithOpcode(0x000)};
+    const std::array code{WithOpcode(0x918), WithOpcode(0x000), WithOpcode(0x000)};
     CHECK(Shader::Native::Missing(code).empty());
 
     // A zero opcode word with other bits set is not padding, so it is still reported.
@@ -45,7 +43,7 @@ TEST_CASE("Zero padding is not an unimplemented opcode", "[video_core][native]")
 }
 
 TEST_CASE("A program of implemented opcodes is covered", "[video_core][native]") {
-    const std::array code{WithOpcode(0x918), WithOpcode(0x94d)};
+    const std::array code{WithOpcode(0x918), WithOpcode(0xa23)};
     CHECK(Shader::Native::Missing(code).empty());
-    CHECK(Shader::Native::ImplementedCount() == 2);
+    CHECK(Shader::Native::ImplementedCount() == 15);
 }

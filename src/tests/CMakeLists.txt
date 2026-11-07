@@ -22,6 +22,7 @@ add_executable(tests
     video_core/ampere_register_pressure.cpp
     video_core/ampere_select_uniform.cpp
     video_core/native_frontend.cpp
+    video_core/native_translate.cpp
     video_core/ampere_yoshi_title.cpp
     video_core/ampere_yoshi_compute.cpp
     video_core/texture_rect_descriptor.cpp

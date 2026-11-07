@@ -51,9 +51,13 @@ never depends on the host GPU: "native" means the guest instruction set, not the
 
 ```sh
 build-sweep/bin/shader-sweep <program.bin> --stage compute --format instructions --native
-# {"phase":"native","implemented_opcodes":2,"unimplemented_instructions":1907,
-#  "unimplemented":[{"count":157,"opcode":"0x223"}, ...],"status":"blocked"}
+# {"phase":"native","implemented_opcodes":15,"translated_instructions":...,
+#  "unimplemented_instructions":970,"unimplemented":[{"count":59,"opcode":"0x20b"}, ...],
+#  "status":"blocked","error":{"code":"translation_failed",...}}
 ```
+
+The report gives both answers: the opcode histogram says what is missing overall, and the translation
+attempt says at which instruction the frontend actually stops.
 
 A program with an empty `unimplemented` list is fully covered. Opcodes are added one family at a
 time, each with a captured instruction and its nvdisasm decode.
@@ -83,8 +87,9 @@ switch: a proven effect ships unconditional.
   still missing, which rejects a program whenever a high guest register forces a shadow copy).
   `tools/nx2/lower_operand_audit.py` prints the gap.
 - 1.4.2 finish the merge workflow.
-- 1.7 the native frontend: scaffold and coverage scoreboard are in place, the arithmetic families,
-  uniform registers as SSA, gathers, atomics and the parity gate follow (1.7.2 to 1.7.6).
+- 1.7 the native frontend: the scaffold, the coverage scoreboard and the arithmetic families
+  (FMUL, FADD, FFMA, immediate SHFL) are in place. Uniform registers as SSA, gathers, atomics and the
+  parity gate follow (1.7.3 to 1.7.6).
 - 1.5.1 measure end-to-end on OoT and one state-heavy title; 1.5.2 remove the experiment switches
   and document the shipped behaviour.
 

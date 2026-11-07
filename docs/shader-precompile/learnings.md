@@ -575,3 +575,30 @@ Numbers here come from two OoT sessions on the local machine (build `nx2-99ac3d5
   that program). They are padding past the program's end, so the native frontend must ignore zero
   words rather than treat them as unimplemented opcodes, otherwise coverage looks worse than it is.
 - Applies to: phase 1.7. The lowering stays the default and the oracle until 1.7.6.
+
+## 2026-11-07 - Native frontend 1.7.2: the arithmetic families emit IR
+
+- `frontend/native/decode.h` decodes an ALU source into register / immediate / constant buffer /
+  uniform, with the absolute and negate modifiers, using the same field layout the lowering already
+  trusts. Field values confirmed against captured words, not guessed: `110f7a20 00c13500 ...`
+  decodes with nvdisasm as `FMUL.FTZ R15, R17, c[0x3][0x4d4]`, and the decoder reads bank 3 at
+  bits 54-58, byte offset 0x4d4 at bits 38-53, destination R15 at bits 16-23, first source R17 at
+  bits 24-31 and scale 4 at bits 84-86.
+- `frontend/native/translate.cpp` emits IR for FMUL, FADD, FFMA (register, immediate and constant
+  buffer forms) and the immediate-lane SHFL. The floating control word maps 1:1 onto the Maxwell one
+  the lowering already produces (bits 78-79 rounding, bit 80 flush-to-zero, bit 77 saturate), so both
+  frontends agree on the FP flags for the same instruction.
+- Instruction predicates are real in this corpus: 138 of 155 FADDs in the captured compute program
+  are guarded (`@P4 FADD.FTZ R16, R16, R39`). The IR has no per-instruction predicate, so a guarded
+  destination becomes `Select(guard, value, old value)`, which is exact for a register write. The
+  Maxwell frontend ignores these guards, so this is one place where the native path is more correct
+  than the lowering rather than merely equal.
+- Uniform-source forms (6 and 7) are routed to a precise `native uniform source` failure instead of
+  being absent from the dispatch, so the coverage report says why a program stops. They become SSA
+  values in 1.7.3.
+- Scoreboard: the captured OoT compute program goes from 1884 to 970 unimplemented instructions
+  (91 distinct opcodes left) with 15 implemented opcodes. The translation still stops immediately:
+  the program opens with `0x919`, which is not an arithmetic opcode, so whole-program coverage needs
+  the control-flow and system-opcode work that 1.7.5 and 1.7.6 carry.
+- Learning: the decode helper is the piece worth keeping shared. Every field the native frontend
+  needs is already written down in the lowering, so the port's cost is IR semantics, not bit layout.

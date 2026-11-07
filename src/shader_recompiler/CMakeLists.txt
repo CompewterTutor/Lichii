@@ -61,6 +61,9 @@ add_library(shader_recompiler STATIC
     frontend/ir/value.cpp
     frontend/ir/value.h
     frontend/ampere/lower_to_maxwell.h
+    frontend/native/decode.h
+    frontend/native/translate.cpp
+    frontend/native/translate.h
     frontend/native/translate_program.cpp
     frontend/native/translate_program.h
     frontend/ampere/program_override.h

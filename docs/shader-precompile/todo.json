@@ -710,7 +710,7 @@
         {
           "id": "1.7.2",
           "title": "Direct IR for the arithmetic families",
-          "status": "pending",
+          "status": "done",
           "goal": "Emit IR for FADD, FMUL, FFMA, IADD3/IMNMX and the shifts/sel families, which cover most instructions in a program. Decode the native operand forms (register, immediate, cbuf, uniform) from the instruction bits rather than through a rewritten encoding.",
           "touches": [
             "src/shader_recompiler/frontend/native/",
@@ -727,8 +727,8 @@
           "complexity": "High",
           "agent": "pro_dev_agent",
           "created_at": "2026-11-07T16:10:04Z",
-          "updated_at": "2026-11-07T16:10:04Z",
-          "changelog": ""
+          "updated_at": "2026-11-07T16:30:04Z",
+          "changelog": "FMUL, FADD, FFMA (register, immediate and constant buffer forms) and the immediate-lane SHFL now translate straight to IR, with the floating control word mapped 1:1 from the Maxwell equivalent. Guarded instructions become Select(guard, value, old value), which the Maxwell frontend ignores entirely; 138 of 155 FADDs in the captured program are guarded. Uniform-source forms fail with their own reason and wait for 1.7.3. Coverage on the captured OoT compute program: 1884 to 970 unimplemented instructions; 15 opcodes implemented."
         },
         {
           "id": "1.7.3",
