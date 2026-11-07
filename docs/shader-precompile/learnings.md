@@ -540,3 +540,21 @@ Numbers here come from two OoT sessions on the local machine (build `nx2-99ac3d5
   `0x291` the field is a predicate destination, which explains why the existing guard refuses it: a
   rewrite has to materialise the carry into R239 with the same machinery `ULOP3` uses.
 - Applies to: 1.3.3's four "unsupported native opcode" groups, and the LEA carry group.
+
+## 2026-11-07 - FSEL with a uniform source: 6 to 10 of the 68 lower
+
+- `0xc08` decoded as `FSEL Rd, Ra, URb, Pp` and is the uniform-source sibling of the bitwise
+  SEL/FSEL case (`0x208`/`0x808`/`0xa08`). The lowering needed one extra branch: bits 32-37 hold the
+  uniform index, bits 87-90 the select predicate and its `.NOT`, and bit 91 marks the uniform form.
+  The uniform index maps through `uniform_register`, so UR4 becomes R220 and the same Maxwell SEL
+  encoding is emitted.
+- Two details the first attempt got wrong, both visible only because the captured programs were
+  re-run: the allowed word mask must include the predicate and `.NOT` bits (`~0x0f800000`, not
+  `~0x08800000`), and source `RZ` (255) is a legal first operand, so only the uniform index may be
+  rejected.
+- Result: 10 of the 68 OoT programs now lower, up from 6. The four that changed are fragment
+  shaders whose only remaining gap was this select.
+- Learning: with nvdisasm available locally the loop is short: decode the word, find the sibling
+  case the lowering already has, add the one field the sibling does not cover, and re-run the
+  captured programs. Each of the four "unsupported native opcode" groups has such a sibling except
+  `0x3a9` (global CAS).

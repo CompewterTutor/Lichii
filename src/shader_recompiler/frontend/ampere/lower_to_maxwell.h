@@ -3237,6 +3237,16 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 (u64{insn.Bits(87, 3)} << 39) | (u64{insn.Bits(90, 1)} << 42));
             break;
         }
+        case 0xc08: { // FSEL with a uniform second source: the index is bits 32-37.
+            // Bits 87-90 are the select predicate and its .NOT, and bit 91 marks the uniform form.
+            if (!insn.Bits(91, 1) || (insn.words[2] & ~0x0f800000U))
+                return fail(index, "native uniform select mode");
+            const u32 a = operand(0, true), b = uniform_register(insn.Bits(32, 8));
+            if (b == ~0U) return fail(index, "native uniform select register");
+            emit(base(0x5ca0000000000000ULL) | (u64{a} << 8) | (u64{b} << 20) |
+                (u64{insn.Bits(87, 3)} << 39) | (u64{insn.Bits(90, 1)} << 42));
+            break;
+        }
         case 0x20a: case 0x80a: case 0xa0a: case 0xc0a: { // FSET.BF, combined with Pc (bits 87-90) by bits 74-75 (0xc0a: uniform b)
             if (insn.Bits(64, 8) || insn.Bits(74, 2) == 3 || insn.Bits(81, 6) || (opcode != 0xc0a && insn.Bits(91, 1)))
                 return fail(index, "native floating comparison output mode");
