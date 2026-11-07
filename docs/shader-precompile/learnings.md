@@ -322,3 +322,50 @@ Numbers here come from two OoT sessions on the local machine (build `nx2-99ac3d5
   really drew, which the diff output now makes checkable before export.
 - Re-check when: the dynamic-state surface changes (a new `Size()` branch) or `FixedPipelineState`
   gains fields inside the prefix.
+
+## 2026-11-06 - The OoT `nup` was never corrupt; my launch path was wrong
+
+- Symptom: every launch ended at `core.cpp:403: Failed to obtain loader`, with
+  `AppLoader_NUP: NUP container is a standalone update; booting the update` logged twice just
+  before. The GUI said "The ROM format is not supported".
+- Cause: `GetLoader` received a null file. Instrumenting it showed `file=<null>` on the two calls
+  that follow the frontend's identification passes. `GetGameFileFromPath` returns null when
+  `FS::IsFile` says the path is not a file, and the path I passed had one digit too few:
+  `...Ocarina of TIme [0400486024DEC000].nup` while the file on disk is
+  `...Ocarina of TIme [04004860224DEC000].nup`. The size and mtime never changed, which is why the
+  file itself was never the problem.
+- Learning: the NUP loader branch in `GetLoader` had never been reached in those runs; the two
+  `standalone update` lines come from the NUP constructor invoked by `IdentifyFile`, which proves
+  the container parses even when the boot path gets a null file.
+- Learning: `core.cpp` now logs `No file at <path>: check the path, it may differ in case or digits`
+  and returns `ErrorGetLoader` instead of the generic "failed to obtain loader" after a null file.
+- Learning: a base-commit rebuild from scratch failed with a truncated `1 error generated` and a
+  `build-base` binary that still reported the feature branch, so a build-based bisect was telling
+  us nothing. Read the path the log actually printed before bisecting code.
+- Applies to: any "ROM is broken" report. `Get-Item` size and mtime first, then the exact path
+  string, then the loader.
+
+## 2026-11-06 - Debug-server control surface verified live on OoT
+
+- `tools/nx2/live_check.py --server 127.0.0.1:6565` now runs the whole phase 1.6 surface against a
+  booted game; 21 checks, all passing on `nx2-9cecb6c961` with OoT at the title screen.
+- Measured: pause froze the present counter exactly; `step {frames:10}` advanced exactly 10
+  presents; input_sequence, input_record and input_playback worked; guest read at `0x8000000`;
+  GPU map reported ranges starting at `0x11471b3000`, bulk read, write-back and re-read matched;
+  `shaders` reported 57 programs with 0 rejected; `status.caches` matched the pipeline cache
+  (195 compute, 621 graphics, 1778 key-list graphics keys, 0 evicted).
+- Fixed while verifying: playback parsed the recorded `buttons` hex text with the button-name
+  parser, so every replay threw `unknown button "0000000000000001"`. Recordings round-trip through
+  `ParseRecordedButtons` now, with a unit test.
+- Fixed while verifying: `input_playback` reported `events: 0` because it read `steps.size()` after
+  the vector had been moved into the playback thread.
+- Fixed while verifying: there was no way to discover a mapped GPU address, so every
+  `read_gpu_memory` failed with "is not fully mapped". `MemoryManager::FirstMappedRanges` walks the
+  page tables (word-skipping, big pages first) and the new `gpu_memory_map` tool reports the
+  ranges. Read-only, under the manager's guard.
+- Learning: two playback runs of the same macro advanced the same 73 presents each time, which is
+  the first evidence that record/replay is deterministic enough for A/B work.
+- Learning: the screenshot shader toggle is reversible in one call: the response lists the
+  override, the image differs, and `status.rejected` is empty afterwards.
+- Applies to: phases 1.6.1, 1.6.2, 1.6.3 and the verified part of 1.6.5 and 1.6.6.
+- Re-check when: motion or trigger input is exposed, or render overrides are added to screenshots.

@@ -1822,6 +1822,11 @@ std::optional<VideoCore::DebugShaderInventory> RasterizerVulkan::GetDebugShaders
     return pipeline_cache.DebugShaderInventory();
 }
 
+std::optional<std::vector<std::pair<u64, u64>>> RasterizerVulkan::GetGpuMappedRanges(
+    std::size_t max_ranges) {
+    return gpu_memory->FirstMappedRanges(max_ranges);
+}
+
 void RasterizerVulkan::TickFrame() {    if (VideoCore::Nx2Debug::HasRequests()) {
         if (auto capture = VideoCore::Nx2Debug::TakeCapture()) {
             frame_dump.Arm(std::move(capture->directory), capture->sampled, capture->id);

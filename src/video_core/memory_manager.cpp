@@ -827,6 +827,56 @@ MemoryManager::GetSubmappedRange(GPUVAddr gpu_addr, std::size_t size) const {
     return result;
 }
 
+std::vector<std::pair<GPUVAddr, u64>> MemoryManager::FirstMappedRanges(
+    std::size_t max_ranges) const {
+    std::scoped_lock lock{guard};
+    // Two bits per page entry; a whole zero word skips 32 pages at once, so the walk is cheap
+    // even over the full address space. Big pages are tried first because a title that maps them
+    // leaves the small-page table empty for those regions.
+    const auto scan = [&](const std::vector<u64>& table, u64 page_bytes) {
+        std::vector<std::pair<GPUVAddr, u64>> ranges;
+        std::size_t first{};
+        bool in_range{};
+        for (std::size_t word = 0; word < table.size() && ranges.size() < max_ranges; ++word) {
+            if (table[word] == 0) {
+                if (in_range) {
+                    ranges.emplace_back(static_cast<GPUVAddr>(first * page_bytes),
+                                        static_cast<u64>(word * 32 - first) * page_bytes);
+                    in_range = false;
+                }
+                continue;
+            }
+            for (std::size_t bit = 0; bit < 32; ++bit) {
+                const std::size_t index = word * 32 + bit;
+                const bool mapped =
+                    ((table[word] >> (2 * bit)) & 3ULL) == static_cast<u64>(EntryType::Mapped);
+                if (mapped && !in_range) {
+                    first = index;
+                    in_range = true;
+                } else if (!mapped && in_range) {
+                    ranges.emplace_back(static_cast<GPUVAddr>(first * page_bytes),
+                                        static_cast<u64>(index - first) * page_bytes);
+                    in_range = false;
+                    if (ranges.size() >= max_ranges) {
+                        break;
+                    }
+                }
+            }
+        }
+        if (in_range && ranges.size() < max_ranges) {
+            ranges.emplace_back(static_cast<GPUVAddr>(first * page_bytes),
+                                static_cast<u64>(table.size() * 32 - first) * page_bytes);
+        }
+        return ranges;
+    };
+
+    auto ranges = scan(big_entries, big_page_size);
+    if (ranges.empty()) {
+        ranges = scan(entries, page_size);
+    }
+    return ranges;
+}
+
 template <bool is_gpu_address>
 void MemoryManager::GetSubmappedRangeImpl(GPUVAddr gpu_addr, std::size_t size, boost::container::small_vector<std::pair<std::conditional_t<is_gpu_address, GPUVAddr, DAddr>, std::size_t>, 32>& result)
     const {

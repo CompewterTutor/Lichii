@@ -388,6 +388,11 @@ struct System::Impl {
         }
 
         const auto file = GetGameFileFromPath(virtual_filesystem, filepath);
+        if (file == nullptr) {
+            LOG_CRITICAL(Core, "No file at {}: check the path, it may differ in case or digits",
+                         filepath);
+            return SystemResultStatus::ErrorGetLoader;
+        }
 
         // Create the application process
         Loader::ResultStatus load_result{};

@@ -81,6 +81,13 @@ TEST_CASE("Debug server shader hashes need all 16 hex digits", "[core][nx2_debug
     }
 }
 
+TEST_CASE("Debug server reads recorded buttons back from hex", "[core][nx2_debug_server]") {
+    REQUIRE(Core::Nx2Debug::ParseRecordedButtons(json("0000000000000001")) == 1ULL);
+    REQUIRE(Core::Nx2Debug::ParseRecordedButtons(json("0000000000010301")) == 0x10301ULL);
+    REQUIRE(Core::Nx2Debug::ParseRecordedButtons(json("0000000000000000")) == 0ULL);
+    REQUIRE(Core::Nx2Debug::ParseRecordedButtons(json(0x10301ULL)) == 0x10301ULL);
+}
+
 TEST_CASE("Debug server base64 pads like RFC 4648", "[core][nx2_debug_server]") {
     const auto encode = [](std::string_view text) {
         return Core::Nx2Debug::Base64(

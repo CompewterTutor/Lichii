@@ -68,6 +68,13 @@ public:
         return std::nullopt;
     }
 
+    /// Mapped GPU ranges as (address, size), for the debug server's memory tools: an address it
+    /// can read is one inside one of these.
+    [[nodiscard]] virtual std::optional<std::vector<std::pair<u64, u64>>> GetGpuMappedRanges(
+        std::size_t max_ranges) {
+        return std::nullopt;
+    }
+
     virtual ~RasterizerInterface() = default;
 
     /// Dispatches a draw invocation

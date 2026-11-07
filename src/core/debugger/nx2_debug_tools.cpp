@@ -84,6 +84,15 @@ struct ToolState {
     u64 replay_index{};
 };
 
+/// Recordings store buttons as hex text (Hex), so playback reads that back instead of a name.
+u64 ParseRecordedButtons(const json& value) {
+    if (value.is_number()) {
+        return value.get<u64>();
+    }
+    const std::string text = value.get<std::string>();
+    return std::strtoull(text.c_str(), nullptr, 16);
+}
+
 namespace {
 
 std::string Hex(u64 value) {
@@ -426,7 +435,7 @@ json InputPlayback(ToolState& state, const json& params) {
     for (const json& entry : events) {
         ToolState::RecordedEvent event{};
         event.present = entry.at("present").get<u64>();
-        event.buttons = ParseButtons(entry.at("buttons"));
+        event.buttons = ParseRecordedButtons(entry.at("buttons"));
         if (entry.contains("left")) {
             event.has_sticks = true;
             event.left_x = entry.at("left")[0].get<s32>();
@@ -442,6 +451,7 @@ json InputPlayback(ToolState& state, const json& params) {
     // both start the recording at the same present, so the spacing lands on the same frames.
     const u64 at_present = params.value("at_present", u64{0});
 
+    const size_t event_count = steps.size();
     std::scoped_lock lock{state.control_mutex};
     StopInputThread(state);
     state.input_stop.store(false, std::memory_order_relaxed);
@@ -487,7 +497,7 @@ json InputPlayback(ToolState& state, const json& params) {
         }
     }};
     return {{"name", name},
-            {"events", steps.size()},
+            {"events", event_count},
             {"frames", duration},
             {"at_present", at_present},
             {"pause_at_end", pause_at_end},
@@ -778,6 +788,23 @@ json Shaders(ToolState& state, const json& params) {
             {"shaders", std::move(list)}};
 }
 
+json GpuMemoryMap(ToolState& state, const json& params) {
+    auto* rasterizer = state.system.GPU().Renderer().ReadRasterizer();
+    if (rasterizer == nullptr) {
+        throw std::runtime_error{"no rasterizer is active"};
+    }
+    const size_t limit = Param<size_t>(params, "limit", 32, 1, 4096);
+    const auto ranges = rasterizer->GetGpuMappedRanges(limit);
+    if (!ranges) {
+        throw std::runtime_error{"this renderer has no GPU memory map"};
+    }
+    json list = json::array();
+    for (const auto& [address, size] : *ranges) {
+        list.push_back({{"address", fmt::format("{:#x}", address)}, {"size", size}});
+    }
+    return {{"ranges", std::move(list)}, {"count", ranges->size()}};
+}
+
 json ReadGuestMemory(ToolState& state, const json& params) {
     const u64 address = Param<u64>(params, "address", 0, 0, 0x7fff'ffff'ffff);
     const int size = Param<int>(params, "size", 256, 1, 1 << 20);
@@ -1035,6 +1062,7 @@ Handlers MakeHandlers(const std::shared_ptr<ToolState>& state) {
         {"input_sequence", handler(InputSequence)},
         {"input_record", handler(InputRecord)},
         {"input_playback", handler(InputPlayback)},
+        {"gpu_memory_map", handler(GpuMemoryMap)},
         {"read_gpu_memory", handler(ReadGpuMemory)},
         {"write_gpu_memory", handler(WriteGpuMemory)},
     };

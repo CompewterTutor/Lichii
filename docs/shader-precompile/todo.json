@@ -499,7 +499,7 @@
         {
           "id": "1.6.1",
           "title": "MCP control surface on the debug server",
-          "status": "in_progress",
+          "status": "done",
           "goal": "Promote the existing loopback debug server from passive observation to MCP control: pause/resume, present-granular step, and a typed state snapshot. Keep it off unless EDEN_NX2_DEBUG_SERVER is set, loopback only, and one request at a time. Document the safety boundary: no file system access, no keys, no network.",
           "touches": [
             "src/core/debugger/nx2_debug_server.cpp",
@@ -516,13 +516,13 @@
           "complexity": "Medium",
           "agent": "mid_dev_agent",
           "created_at": "2026-11-06T00:00:00Z",
-          "updated_at": "2026-11-06T23:24:44Z",
-          "changelog": "pause, resume and step are implemented and unit-tested (StepPresents + two tests, 9 debug-server cases pass). status already reports title, paused, presents and fps. Live check on OoT (pause, step 10, resume) still to run with a debug build."
+          "updated_at": "2026-11-07T01:34:22Z",
+          "changelog": "pause, resume and step verified live on OoT with tools/nx2/live_check.py: presents froze at 7274 under pause, step 10 advanced exactly 10, resume cleared the paused flag, and status reported title, paused, presents, fps and caches. Unit tests: StepPresents plus the debug-server suite (11 cases, 93 assertions)."
         },
         {
           "id": "1.6.2",
           "title": "Gamepad and input injection over MCP",
-          "status": "in_progress",
+          "status": "done",
           "goal": "Inject buttons and sticks through the emulated controller so an agent can walk to a scene, reproduce a bug, or cover an area for shader discovery without the owner playing. Timed by presents, not wall time, with a recorded sequence that can be replayed on a fresh boot.",
           "touches": [
             "src/hid_core/frontend/emulated_controller.h",
@@ -541,13 +541,13 @@
           "complexity": "High",
           "agent": "pro_dev_agent",
           "created_at": "2026-11-06T00:00:00Z",
-          "updated_at": "2026-11-06T00:00:00Z",
-          "changelog": "input, input_sequence, input_record and input_playback added. A hid_core overlay is ORed over the player buttons and substitutes sticks, so mapping and the physical controller stay intact. Recordings store each applied state with its present count; playback is timed by presents, relative across boots or absolute within a boot. Not bit-exact: threads and GPU scheduling still vary."
+          "updated_at": "2026-11-07T01:34:22Z",
+          "changelog": "Buttons and sticks, input_sequence, input_record and input_playback verified live on OoT. A three-event macro replayed twice advanced the same 73 presents both times, so the timing is present-count driven. Fixed a real bug found by the live run: recordings store buttons as hex text, and playback fed that text back through the button-name parser, so every replay threw unknown button. ParseRecordedButtons reads hex (or a number) and has a unit test. Motion and triggers are not exposed yet."
         },
         {
           "id": "1.6.3",
           "title": "Guest and GPU memory read/write",
-          "status": "in_progress",
+          "status": "done",
           "goal": "Read and write application memory and GPU address spaces by address and size, through Core::Memory and Tegra::MemoryManager, with unmapped ranges reported instead of guessed. Reuse the mapped-page walker already added for scan_shaders.",
           "touches": [
             "src/core/memory.h",
@@ -567,8 +567,8 @@
           "complexity": "Medium",
           "agent": "mid_dev_agent",
           "created_at": "2026-11-06T00:00:00Z",
-          "updated_at": "2026-11-06T00:00:00Z",
-          "changelog": "read/write guest and GPU memory implemented. Guest access goes through Core::Memory with a mapped-range check; GPU access is queued to the rasterizer thread at a frame end so the caches it flushes are its own. Writes need confirm. One new control-queue test; debug-server suite is 10 cases / 89 assertions."
+          "updated_at": "2026-11-07T01:34:22Z",
+          "changelog": "Guest reads verified live at 0x8000000. GPU reads needed a way to find a mapped address, so MemoryManager::FirstMappedRanges plus the gpu_memory_map tool now report the mapped ranges (the page table is not otherwise exposed). Verified live: map, read at 0x11471b3000, write of the bytes just read, and a matching read back."
         },
         {
           "id": "1.6.4",
@@ -593,13 +593,13 @@
           "complexity": "Medium",
           "agent": "mid_dev_agent",
           "created_at": "2026-11-06T00:00:00Z",
-          "updated_at": "2026-11-06T00:00:00Z",
-          "changelog": "status now returns cache counters (graphics/compute pipelines, key-list rows, built, evicted, prefetched, prefetch_failed) through a read-only RasterizerInterface::GetDebugCacheStats, with atomics for the counters. Guest core registers and GPU engine registers remain: both need a stopped core or a rasterizer-thread request."
+          "updated_at": "2026-11-07T01:34:22Z",
+          "changelog": "status.caches verified live and matches the pipeline cache counters (195 compute, 621 graphics, 1778 key-list graphics keys, 0 evictions). GPU engine registers and frame pacing comparison against DKB trace lines are still open."
         },
         {
           "id": "1.6.5",
           "title": "Debug tools and shader discovery over MCP",
-          "status": "pending",
+          "status": "in_progress",
           "goal": "Move the remaining env-gated diagnostics behind the control surface: shader scan and dictionary extraction, frame capture options, shader inventory, reject/restore, and live toggles that are safe at a frame end. Keep the env switches as the initial value so a normal run is unchanged.",
           "touches": [
             "src/core/debugger/nx2_debug_tools.cpp",
@@ -620,7 +620,8 @@
           "complexity": "High",
           "agent": "pro_dev_agent",
           "created_at": "2026-11-06T00:00:00Z",
-          "updated_at": "2026-11-06T00:00:00Z"
+          "updated_at": "2026-11-07T01:34:22Z",
+          "changelog": "shaders inventory, scan_shaders, reject_shaders and the screenshot shader toggle are implemented and verified live on OoT (57 programs at the title screen, a rejected hash changed the image and was restored afterwards). Dictionary extraction over MCP and removing the experiment switches are still open."
         },
         {
           "id": "1.6.6",
@@ -646,8 +647,8 @@
           "complexity": "Medium",
           "agent": "mid_dev_agent",
           "created_at": "2026-11-06T00:00:00Z",
-          "updated_at": "2026-11-06T00:00:00Z",
-          "changelog": "screenshot takes a reject list: the hashes are rejected for the capture only and restored afterwards, so two calls give an A/B pair. The result echoes the active overrides. Render overrides (resolution, sRGB, alpha, pass selection) and stage isolation remain."
+          "updated_at": "2026-11-07T01:34:22Z",
+          "changelog": "screenshot save/inline verified live, and the reject A/B verified live: the response reported the override, the image differed from the plain capture, and status showed no leftover rejection. Render overrides (skipping a pass) are still open."
         }
       ]
     }

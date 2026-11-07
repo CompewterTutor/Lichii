@@ -390,6 +390,20 @@ next frame end, checks `IsFullyMappedRange`, performs the access and publishes t
 tool waits for it, so a call costs up to one frame. Only one access can be pending at a time. A
 read returns base64. Sizes are capped at 1 MiB.
 
+`gpu_memory_map {limit}` lists the mapped GPU ranges (address, size) so a client knows which
+addresses `read_gpu_memory` will accept: the page table is not otherwise exposed, and a read
+outside these ranges fails with "is not fully mapped" instead of returning garbage. Big pages are
+walked first and small pages only when none are set. A confirmed write of the bytes just read is a
+no-op round trip, which is how `tools/nx2/live_check.py` exercises the write path.
+
+### Live checks
+
+`tools/nx2/live_check.py --server 127.0.0.1:6565` runs the phase 1.6 surface against a booted
+game and prints one PASS/FAIL line per check: status, pause/step/resume, input overlay, guest and
+GPU reads, a GPU write round trip, the shader inventory, save and shader-toggle screenshots, and a
+recorded macro replayed twice (the two runs must advance the same number of presents).
+`--skip-motion` and `--skip-reject` drop the parts that drive the game or render extra frames.
+
 ## Phase 1 limits
 
 - Vulkan only for `capture_frame` and `reject_shaders`. The drain point is in

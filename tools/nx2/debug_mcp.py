@@ -255,6 +255,15 @@ TOOLS = [
         },
     },
     {
+        "name": "gpu_memory_map",
+        "description": "Mapped GPU ranges (address, size), lowest first: a read_gpu_memory or "
+                       "write_gpu_memory address has to fall inside one of them.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 4096}},
+        },
+    },
+    {
         "name": "read_guest_memory",
         "description": "Reads application memory (CPU virtual addresses) and returns the bytes "
                        "as base64. Fails on a range that is not fully mapped instead of returning "

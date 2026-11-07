@@ -136,6 +136,8 @@ public:
     [[nodiscard]] std::optional<VideoCore::RasterizerInterface::DebugCacheStats>
     GetDebugCacheStats() override;
     [[nodiscard]] std::optional<VideoCore::DebugShaderInventory> GetDebugShaders() override;
+    [[nodiscard]] std::optional<std::vector<std::pair<u64, u64>>> GetGpuMappedRanges(
+        std::size_t max_ranges) override;
     bool AccelerateConditionalRendering() override;
     bool HasDrawTransformFeedback() override;
     bool AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surface& src,

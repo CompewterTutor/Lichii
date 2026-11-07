@@ -143,6 +143,11 @@ public:
     boost::container::small_vector<std::pair<GPUVAddr, std::size_t>, 32> GetSubmappedRange(
         GPUVAddr gpu_addr, std::size_t size) const;
 
+    /// Mapped GPU ranges at big-page granularity, lowest address first: what the debug server
+    /// needs to find an address worth reading, since the table itself is not exposed.
+    [[nodiscard]] std::vector<std::pair<GPUVAddr, u64>> FirstMappedRanges(
+        std::size_t max_ranges) const;
+
     GPUVAddr Map(GPUVAddr gpu_addr, DAddr dev_addr, std::size_t size,
                  PTEKind kind = PTEKind::INVALID, bool is_big_pages = true);
     GPUVAddr MapSparse(GPUVAddr gpu_addr, std::size_t size, bool is_big_pages = true);
