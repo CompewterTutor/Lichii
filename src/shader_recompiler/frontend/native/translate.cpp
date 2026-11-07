@@ -6,6 +6,8 @@
 #include <array>
 #include <bit>
 
+#include "shader_recompiler/frontend/maxwell/translate/impl/common_funcs.h"
+
 namespace Shader::Native {
 
 namespace {
@@ -229,6 +231,130 @@ void Translator::EmitMove() {
     WriteUint(value);
 }
 
+void Translator::EmitSystemRegisterRead() {
+    // S2R / S2UR. The special register number is the high byte of word 2, and word 2 carries
+    // nothing else, which is what makes the encoding unambiguous.
+    const u32 special = current.Bits(72, 8);
+    if (current.words[1] != 0 || current.words[2] != (special << 8)) {
+        throw Unsupported{"native special register mode"};
+    }
+    const bool uniform = current.Bits(0, 12) == 0x9c3;
+    IR::U32 value{[&]() -> IR::U32 {
+        switch (special) {
+        case 0: // SR_LANEID
+            return ir.LaneId();
+        case 17: // SR_INVOCATION_ID
+            return ir.InvocationId();
+        case 18: // SR_Y_DIRECTION
+            return IR::U32{ir.BitCast<IR::U32>(ir.YDirection())};
+        case 19: // SR_THREAD_KILL
+            return IR::U32{ir.Select(ir.IsHelperInvocation(), ir.Imm32(-1), ir.Imm32(0))};
+        case 29: // SR_INVOCATION_INFO
+            return ir.InvocationInfo();
+        case 30: // SR_WSCALEFACTOR_XY
+            return ir.SR_WScaleFactorXY();
+        case 31: // SR_WSCALEFACTOR_Z
+            return ir.SR_WScaleFactorZ();
+        case 32: { // SR_TID
+            const IR::Value tid{ir.LocalInvocationId()};
+            return ir.BitFieldInsert(
+                ir.BitFieldInsert(IR::U32{ir.CompositeExtract(tid, 0)},
+                                  IR::U32{ir.CompositeExtract(tid, 1)}, ir.Imm32(16),
+                                  ir.Imm32(8)),
+                IR::U32{ir.CompositeExtract(tid, 2)}, ir.Imm32(26), ir.Imm32(6));
+        }
+        case 33:
+            return ir.LocalInvocationIdX();
+        case 34:
+            return ir.LocalInvocationIdY();
+        case 35:
+            return ir.LocalInvocationIdZ();
+        case 37:
+            return ir.WorkgroupIdX();
+        case 38:
+            return ir.WorkgroupIdY();
+        case 39:
+            return ir.WorkgroupIdZ();
+        case 56: // SR_EQMASK
+            return ir.SubgroupEqMask();
+        case 57:
+            return ir.SubgroupLtMask();
+        case 58:
+            return ir.SubgroupLeMask();
+        case 59:
+            return ir.SubgroupGtMask();
+        case 60:
+            return ir.SubgroupGeMask();
+        case 132: // SR_VARIABLE_RATE: without variable-rate shading every fragment is 1x1.
+            return ir.Imm32(0x00010100);
+        default:
+            throw Unsupported{"native special register"};
+        }
+    }()};
+    if (!uniform) {
+        WriteUint(value);
+        return;
+    }
+    const u32 target = current.Bits(16, 8);
+    if (target >= NUM_UNIFORM_REGISTERS) {
+        throw Unsupported{"native uniform special destination"};
+    }
+    ir.SetReg(UniformRegister(target), value);
+}
+
+void Translator::EmitSetPredicate() {
+    // FSETP and ISETP: compare, then combine the result with the accumulated predicate.
+    const u32 opcode = current.Bits(0, 12);
+    const bool floating = (opcode & 0x1ff) == 0xb;
+    const u32 combine_bits = current.Bits(74, 2);
+    if (combine_bits > 2) {
+        throw Unsupported{"native predicate combination"};
+    }
+    const auto combine = static_cast<Maxwell::BooleanOp>(combine_bits);
+    const u32 accumulate_index = current.Bits(87, 3);
+    const IR::U1 accumulate{
+        accumulate_index == 7
+            ? ir.Imm1(true)
+            : ir.GetPred(static_cast<IR::Pred>(accumulate_index), current.Bits(90, 1) != 0)};
+
+    IR::U1 comparison{[&]() -> IR::U1 {
+        if (floating) {
+            const IR::FpControl control{
+                .no_contraction = false,
+                .rounding = IR::FpRounding::DontCare,
+                .fmz_mode = current.Bits(80, 1) ? IR::FmzMode::FTZ : IR::FmzMode::None,
+            };
+            return Maxwell::FloatingPointCompare(
+                ir, ReadFloat(0), ReadFloat(1),
+                static_cast<Maxwell::FPCompareOp>(current.Bits(76, 4)), control);
+        }
+        if (current.Bits(72, 1)) {
+            throw Unsupported{"native extended integer comparison mode"};
+        }
+        return Maxwell::IntegerCompare(ir, ReadUint(0), ReadUint(1),
+                                       static_cast<Maxwell::CompareOp>(current.Bits(76, 3)),
+                                       current.Bits(73, 1) != 0);
+    }()};
+
+    const u32 dest_a = current.Bits(81, 3);
+    const u32 dest_b = current.Bits(84, 3);
+    const Guard guard = DecodeGuard(current);
+    const IR::U1 condition{guard ? ir.GetPred(static_cast<IR::Pred>(guard.index), guard.negated)
+                                 : ir.Imm1(true)};
+    const auto write = [&](u32 dest, const IR::U1& value) {
+        if (dest == 7) {
+            return;
+        }
+        const IR::U1 stored{
+            guard ? IR::U1{ir.Select(condition, value, ir.GetPred(static_cast<IR::Pred>(dest)))}
+                  : value};
+        ir.SetPred(static_cast<IR::Pred>(dest), stored);
+    };
+    write(dest_a, Maxwell::PredicateCombine(ir, comparison, accumulate, combine));
+    write(dest_b, Maxwell::PredicateCombine(ir, IR::U1{ir.LogicalNot(comparison)}, accumulate,
+                                            combine));
+}
+
 void Translator::EmitUniformMove() {
     // UMOV: a uniform register from a uniform register or an immediate. These execute uniformly, so
     // their guard is a uniform predicate.
@@ -385,6 +511,20 @@ void Translator::Emit() {
     case 0xa02: // MOV   (constant buffer)
     case 0xc02: // MOV   (uniform register)
         EmitMove();
+        return;
+    case 0x919: // S2R
+    case 0x9c3: // S2UR
+        EmitSystemRegisterRead();
+        return;
+    case 0x20b: // FSETP (register)
+    case 0x80b: // FSETP (immediate)
+    case 0xa0b: // FSETP (constant buffer)
+    case 0xc0b: // FSETP (uniform)
+    case 0x20c: // ISETP (register)
+    case 0x80c: // ISETP (immediate)
+    case 0xa0c: // ISETP (constant buffer)
+    case 0xc0c: // ISETP (uniform)
+        EmitSetPredicate();
         return;
     case 0x882: // UMOV  (immediate)
     case 0xc82: // UMOV  (uniform register)

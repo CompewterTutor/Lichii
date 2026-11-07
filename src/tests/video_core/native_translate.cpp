@@ -107,6 +107,12 @@ constexpr Instruction FaddGuarded{{0x10104221, 0x00000027, 0x00010000, 0x000fe20
 constexpr Instruction FaddCbufNegated{{0x11117621, 0x00c01100, 0x00010100, 0x000fc600}};
 /// SHFL.IDX PT, R39, R18, 0x1, 0x1f
 constexpr Instruction Shuffle{{0x12277f89, 0x00201f00, 0x000e0000, 0x000ea200}};
+/// S2R R2, SR_TID.X
+constexpr Instruction ReadTidX{{0x00027919, 0x00000000, 0x00002100, 0x000e2800}};
+/// FSETP.GT.FTZ.AND P0, PT, R46, RZ, PT
+constexpr Instruction FloatSetPredicate{{0x2e00720b, 0x000000ff, 0x03f14000, 0x001fe400}};
+/// ISETP.GE.U32.AND P2, PT, R50, R4, PT
+constexpr Instruction IntSetPredicate{{0x3200720c, 0x00000004, 0x03f46070, 0x000fc800}};
 
 } // Anonymous namespace
 
@@ -186,6 +192,31 @@ TEST_CASE("SHFL with an immediate lane translates to a shuffle", "[video_core][n
     const IR::Inst* store = shuffle.Find(IR::Opcode::SetRegister);
     REQUIRE(store != nullptr);
     CHECK(store->Arg(0).Reg() == IR::Reg::R39);
+}
+
+TEST_CASE("S2R reads a special register", "[video_core][native]") {
+    const Translated tid{ReadTidX};
+    // SR_TID_X is the local invocation id, which is not an instruction argument but a read.
+    const IR::Inst* store = tid.Find(IR::Opcode::SetRegister);
+    REQUIRE(store != nullptr);
+    CHECK(store->Arg(0).Reg() == IR::Reg::R2);
+    CHECK(tid.Find(IR::Opcode::LocalInvocationId) != nullptr);
+}
+
+TEST_CASE("FSETP and ISETP set predicates", "[video_core][native]") {
+    const Translated floating{FloatSetPredicate};
+    const IR::Inst* fp = floating.Find(IR::Opcode::SetPred);
+    REQUIRE(fp != nullptr);
+    CHECK(fp->Arg(0).Pred() == IR::Pred::P0);
+    // FPCompareOp GT becomes a greater-than comparison.
+    CHECK(floating.Find(IR::Opcode::FPOrdGreaterThan32) != nullptr);
+
+    const Translated integer{IntSetPredicate};
+    const IR::Inst* ip = integer.Find(IR::Opcode::SetPred);
+    REQUIRE(ip != nullptr);
+    CHECK(ip->Arg(0).Pred() == IR::Pred::P2);
+    // GE.U32 becomes a greater-than-or-equal comparison with an unsigned source.
+    CHECK(integer.Find(IR::Opcode::UGreaterThanEqual) != nullptr);
 }
 
 TEST_CASE("Opcode gaps fail instead of guessing", "[video_core][native]") {

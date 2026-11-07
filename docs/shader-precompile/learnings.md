@@ -630,3 +630,26 @@ Numbers here come from two OoT sessions on the local machine (build `nx2-99ac3d5
 - Whole-program translation still stops at instruction 0: the program opens with `0x919`, which
   nvdisasm decodes as `S2R R2, SR_TID.X`. System opcodes and control flow are the next real gate,
   not arithmetic.
+
+## 2026-11-07 - Native frontend: S2R and the set-predicate family
+
+- `0x919` decodes as `S2R Rd, SR` with the special register number in the high byte of word 2 and
+  nothing else in word 2, which is a strong self-check: the encoding is rejected unless
+  `words[2] == special << 8`. `0x9c3` is the uniform variant (S2UR). The specials implemented mirror
+  what the Maxwell S2R already reads, plus `SR_VARIABLE_RATE` (132), which is the 1x1 fragment size
+  `0x00010100`.
+- `0x20b`/`0x80b`/`0xa0b`/`0xc0b` (FSETP) and `0x20c`/`0x80c`/`0xa0c`/`0xc0c` (ISETP) map onto the
+  Maxwell translator's own building blocks: bit 81-83 destination, bit 84-86 second destination,
+  bit 87-89 the accumulated predicate with its negation in bit 90, bit 74-75 the combination
+  (AND/OR/XOR), bit 76 the compare operation and bit 73 the integer signedness. Reusing
+  `IntegerCompare`, `FloatingPointCompare` and `PredicateCombine` means the semantics are the same
+  code the Maxwell path runs, not a second implementation of them.
+- Verified against captured words before writing any test: `2e00720b ... 03f14000` gives compare 4 =
+  GT with bit 80 set, which nvdisasm prints as `FSETP.GT.FTZ.AND P0, PT, R46, RZ, PT`; `3200720c ...
+  03f46070` gives compare 6 = GE with bit 73 clear, printed as `ISETP.GE.U32.AND P2, PT, R50, R4, PT`.
+- Scoreboard: 813 to 680 unimplemented instructions, 76 distinct opcodes, 37 implemented. The
+  translation now gets past the program start for the first time: it stops at index 2, `0x824`
+  (`IMAD.U32 R5, R3, 0x60, R2`).
+- Learning: the remaining top of the list is finally the structural work rather than an opcode gap —
+  `0x947 BRA` (53), `0x812 LOP3` (51), `0x981 LDG` (39), `0x308 MUFU` (38), `0x803 P2R` (31). Branches
+  need the block graph (`TranslateBlock` is still one linear block), memory needs address analysis.

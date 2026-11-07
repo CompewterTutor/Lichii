@@ -750,8 +750,8 @@
           ],
           "complexity": "High",
           "created_at": "2026-11-07T16:10:04Z",
-          "updated_at": "2026-11-07T16:45:06Z",
-          "changelog": "Uniform registers get their own IR bank at R512 and uniform predicates are registers holding 0 or all ones; PLOP3.LUT expands to seven selects over the truth table. Added MOV (register/immediate/cbuf/uniform), UMOV (immediate/uniform) and the uniform-source arithmetic forms. Coverage on the captured OoT compute program: 970 to 813 unimplemented instructions, 27 opcodes implemented. Noted that no corpus program fails with native register shadowing mode, so the criterion was restated as the property holding by construction."
+          "updated_at": "2026-11-07T19:11:41Z",
+          "changelog": "Uniform registers get their own IR bank at R512 and uniform predicates are registers holding 0 or all ones; PLOP3.LUT expands to seven selects over the truth table. Added MOV (register/immediate/cbuf/uniform), UMOV (immediate/uniform) and the uniform-source arithmetic forms. Coverage on the captured OoT compute program: 970 to 813 unimplemented instructions, 27 opcodes implemented. Noted that no corpus program fails with native register shadowing mode, so the criterion was restated as the property holding by construction. Follow-up in the same area: S2R/S2UR (0x919, 0x9c3) and FSETP/ISETP (0x20b/0x20c and their immediate, cbuf and uniform forms) translate, reusing the Maxwell translator's IntegerCompare, FloatingPointCompare and PredicateCombine rather than reimplementing the semantics. Coverage: 813 to 680 unimplemented instructions, 37 opcodes; translation now passes the program start and stops at index 2 (0x824 IMAD)."
         },
         {
           "id": "1.7.4",

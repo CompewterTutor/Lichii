@@ -72,6 +72,8 @@ private:
     void WriteUint(const IR::U32& value);
 
     void EmitMove();
+    void EmitSystemRegisterRead();
+    void EmitSetPredicate();
     void EmitUniformMove();
     void EmitPredicateLut();
     void EmitFloatAdd();
