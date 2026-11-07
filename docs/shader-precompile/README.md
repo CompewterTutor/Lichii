@@ -56,8 +56,10 @@ build-sweep/bin/shader-sweep <program.bin> --stage compute --format instructions
 #  "status":"blocked","error":{"code":"translation_failed",...}}
 ```
 
-The report gives both answers: the opcode histogram says what is missing overall, and the translation
-attempt says at which instruction the frontend actually stops.
+The report gives both answers: the opcode histogram says what is missing overall, and building the
+program for real says at which instruction the frontend actually stops. `control_blocks`,
+`syntax_nodes` and `ir_instructions` show how far the structured IR came out; `structure_failed`
+with `unsupported native opcode` means the control flow was fine and an instruction is missing.
 
 A program with an empty `unimplemented` list is fully covered. Opcodes are added one family at a
 time, each with a captured instruction and its nvdisasm decode.

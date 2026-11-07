@@ -546,6 +546,12 @@ void Translator::Emit() {
         EmitImmediateShuffle();
         return;
     case 0x918: // NOP
+    case 0x945: // BSSY
+    case 0x941: // BSYNC
+    case 0x942: // BREAK
+    case 0x948: // WARPSYNC
+        // Warp reconvergence is a no-op on the host: threads are independent, and the branches
+        // these instructions delimit are what the structurer reads.
         return;
     default:
         throw Unsupported{"unsupported native opcode"};

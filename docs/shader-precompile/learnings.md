@@ -653,3 +653,31 @@ Numbers here come from two OoT sessions on the local machine (build `nx2-99ac3d5
 - Learning: the remaining top of the list is finally the structural work rather than an opcode gap —
   `0x947 BRA` (53), `0x812 LOP3` (51), `0x981 LDG` (39), `0x308 MUFU` (38), `0x803 P2R` (31). Branches
   need the block graph (`TranslateBlock` is still one linear block), memory needs address analysis.
+
+## 2026-11-07 - Native control flow: the shapes NVN2 actually emits
+
+- The control-flow instruction set matches Maxwell's model: BSSY Bn, target names a reconvergence
+  point, BSYNC Bn closes the region, BRA leaves it, EXIT ends the program. BREAK and WARPSYNC are
+  reconvergence management with no host effect, so both the structurer and the translator drop them.
+- Measured shapes in the captured OoT compute program (1920 instructions): 53 BRA, 14 BSSY, 14 BSYNC,
+  4 EXIT, 52 forward branches, exactly 1 backward branch — and that one is the closing self-branch of
+  a computed jump. The program has no loops at all, only if/else diamonds, so loop structuring is not
+  needed to cover it.
+- Branch encoding, taken from the lowering's own relocation maths and unchanged: the target is
+  `index * 16 + 16 + sign_extend_50(words[1] & ~3 | (words[2] & 0x3ffff) << 32)` divided by 16.
+  Bits 32-33 select the convergence mode (2 = .DIV never branches, 3 = .CONV always).
+- Two things the synthetic tests could not have told us:
+  - 9 of the 53 branches carry a *second* condition in bits 87-90. The branch is taken only when
+    both hold: the plain guard in bits 12-15 must be true for control to continue at all, and the
+    extra predicate in 87-90 is what actually goes to the target. Modelling it as a conjunction is
+    what the lowering does too (it emits `@extra BRA target` plus `@!guard BRA fallthrough`).
+  - The opcode word with no predicate is not "zero in bits 12-15": `0x7947` already has 7 there, so a
+    predicated test instruction has to *replace* those bits, not or them in. The first version of the
+    tests silently produced more PT branches that way.
+- Structuring: blocks split at branch targets, at BSSY reconvergence points and after terminators.
+  A conditional branch whose target is the region end is a break; otherwise it is a diamond whose
+  merge is the target of the branch at the end of the then-part. If-nodes take the fallthrough
+  condition, so the guard is negated.
+- State on the captured program: 91 control blocks, and structuring now runs until it meets an
+  unimplemented opcode instead of failing on shape. The first blocker is `0x824`
+  (`IMAD.U32 R5, R3, 0x60, R2`), which is arithmetic, not control flow.

@@ -21,6 +21,7 @@
 #include "shader_recompiler/environment.h"
 #include "shader_recompiler/frontend/ampere/lower_to_maxwell.h"
 
+#include "shader_recompiler/frontend/native/control_flow.h"
 #include "shader_recompiler/frontend/native/translate.h"
 #include "shader_recompiler/frontend/native/translate_program.h"
 #include "shader_recompiler/frontend/ampere/program_address_map.h"
@@ -668,26 +669,32 @@ int main(int argc, char** argv) {
                 diagnostic["unimplemented_instructions"] = absent;
                 diagnostic["unimplemented"] = std::move(list);
 
-                // The histogram says what is missing; translating for real says whether the forms
-                // in this program are among the ones the frontend can take.
-                Shader::ObjectPool<Shader::IR::Inst> pool{256};
-                Shader::IR::Block block{pool};
-                const auto translated = Shader::Native::TranslateBlock(env, block, native);
-                diagnostic["translated_instructions"] = block.size();
-                if (translated) {
+                // The histogram says what is missing; building the program for real says whether
+                // the forms and the control flow in this program are among the ones the frontend
+                // can take.
+                Shader::ObjectPool<Shader::IR::Inst> inst_pool{256};
+                Shader::ObjectPool<Shader::IR::Block> block_pool{64};
+                Shader::Native::Structurer structurer{env, native, inst_pool, block_pool};
+                const bool structured = structurer.Build();
+                std::size_t ir_instructions{};
+                for (const auto& node : structurer.Syntax()) {
+                    if (node.type == Shader::IR::AbstractSyntaxNode::Type::Block) {
+                        ir_instructions += node.data.block->size();
+                    }
+                }
+                diagnostic["control_blocks"] = structurer.Blocks().size();
+                diagnostic["syntax_nodes"] = structurer.Syntax().size();
+                diagnostic["ir_instructions"] = ir_instructions;
+                if (structured) {
                     diagnostic["status"] = missing.empty() ? "ok" : "blocked";
                     diagnostic["error"] = {{"code", "translation_incomplete"}};
                 } else {
                     diagnostic["status"] = "blocked";
-                    diagnostic["stop_index"] = translated.error_index;
-                    diagnostic["stop_offset"] =
-                        translated.error_index * sizeof(Instruction);
-                    diagnostic["error"] = {{"code", "translation_failed"},
-                                           {"message", translated.error},
-                                           {"offset", translated.error_index * sizeof(Instruction)}};
+                    diagnostic["error"] = {{"code", "structure_failed"},
+                                           {"message", structurer.Error()}};
                 }
                 std::cout << diagnostic.dump() << '\n';
-                return translated ? 0 : 1;
+                return structured ? 0 : 1;
             }
             diagnostic["phase"] = "lower";
             std::vector<u32> traps;
