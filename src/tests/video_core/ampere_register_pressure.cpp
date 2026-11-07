@@ -70,6 +70,27 @@ TEST_CASE("Register shadows cover IMNMX, its uniform form and R2UR", "[video_cor
     CheckShadowed(r2ur);
 }
 
+TEST_CASE("Register shadows cover the scalar conversion and packed dot opcodes",
+          "[video_core][ampere][pressure]") {
+    // F2F.F16.F32 reads its source at bits 32-39 and requires bits 24-31 to be zero.
+    Instruction f2f{0, 0, 0, 0};
+    SetBits(f2f, 0, 12, 0x304);
+    SetBits(f2f, 16, 8, 30);
+    SetBits(f2f, 32, 8, 230);
+    SetBits(f2f, 12, 4, 7);
+    CheckShadowed(f2f);
+
+    // IDP.2A.LO reads a, b and the accumulator and writes its destination.
+    Instruction dot{0, 0, 0, 0};
+    SetBits(dot, 0, 12, 0x226);
+    SetBits(dot, 16, 8, 220);
+    SetBits(dot, 24, 8, 221);
+    SetBits(dot, 32, 8, 222);
+    SetBits(dot, 64, 8, 223);
+    SetBits(dot, 12, 4, 7);
+    CheckShadowed(dot);
+}
+
 TEST_CASE("An opcode without an operand list refuses rather than guessing",
           "[video_core][ampere][pressure]") {
     // A wrong operand list rewrites a field that is not a register and corrupts the program, so an

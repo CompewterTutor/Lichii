@@ -65,9 +65,22 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
     case 0x220:
     case 0x221:
     case 0x209:
+    case 0x809:
+    case 0xa09:
+    case 0xc09:
         operand(16);
         operand(24);
         operand(32);
+        break;
+    case 0x304: // F2F.F16.F32: the source is bits 32-39, bits 24-31 must be zero.
+        operand(32);
+        operand(16);
+        break;
+    case 0x226: // IDP.2A.LO: dest, a, b and the accumulator are all guest registers.
+        operand(16);
+        operand(24);
+        operand(32);
+        operand(64);
         break;
     case 0x805:
         operand(16, 2);
@@ -96,6 +109,9 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
         operand(64);
         break;
     case 0x621:
+    case 0x821:
+    case 0xa21:
+    case 0xe21:
         operand(16);
         operand(24);
         break;
