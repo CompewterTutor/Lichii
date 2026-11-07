@@ -6,6 +6,38 @@ New entries go under `## [Unreleased]`; `tools/ci/bump-version.sh` turns them in
 
 ## [Unreleased]
 
+### Added
+
+- Per-title pipeline key lists: every pipeline the title builds is recorded as a row of shader
+  hashes plus fixed pipeline state, and matching pipelines are built on background workers before
+  the game asks for them, which removes most mid-game compilation stalls. Lists hold identifiers
+  only, never shader code, SPIR-V, driver data or environment blobs.
+- An LRU memory budget for the pipeline cache (1536 MB by default) replaces idle-frame mass
+  eviction. Measured on The Legend of Zelda: Ocarina of Time: 0 evictions in four minutes against
+  175 with the old policy. `EDEN_NX2_PIPELINE_EVICT=legacy` restores the old behaviour.
+- `tools/nx2/shader_scan` extracts the shader programs inside a NUP container (BNSH, BAHS, NDSR
+  and NDVE), with `--extract` writing a manifest of programs and hashes for offline key-list work.
+- `tools/nx2/keylist_tool.py` inspects, merges and diffs key lists, with 12 unit tests.
+- Debug server control tools, still opt-in through `EDEN_NX2_DEBUG_SERVER` and loopback only:
+  `pause`, `resume`, `step` (present-granular), `input`, `input_sequence`, `input_record`,
+  `input_playback`, guest and GPU memory read/write, `shaders`, `gpu_memory_map`, and screenshot
+  shader toggles for A/B images without a relaunch.
+- `tools/nx2/live_check.py` runs 21 live checks of those tools against a booted game.
+
+### Changed
+
+- `status` reports the pipeline cache counters (built, evicted, prefetched, prefetch failed) and the
+  key-list row counts next to the boot and pacing fields.
+
+### Fixed
+
+- Recorded input replays again: recordings store buttons as hex text, which the playback path fed
+  through the button-name parser, so every replay failed with `unknown button`.
+- `input_playback` reports how many events it replays instead of always `0`.
+- A path the loader cannot open now logs `No file at <path>: check the path, it may differ in case
+  or digits` instead of the generic `Failed to obtain loader`, which made a healthy ROM container
+  look corrupt.
+
 ## [0.1.0]
 
 - Initial release candidate

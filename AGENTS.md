@@ -49,7 +49,7 @@ $PY -I C:/lx/src/tools/nx2/debug_mcp.py --server 127.0.0.1:6545 --call '{"method
 $PY -I C:/lx/src/tools/nx2/debug_mcp.py --server 127.0.0.1:6545 --call '{"method":"screenshot"}' --out C:/Users/Zortos/.capy/work/lichii-debug/shot.png
 ```
 
-Methods: `status`, `screenshot`, `log_tail` (`after`, `contains`), `log_filter`, `capture_frame` (the frame dump below, taken now; `sampled`, `index`), `capture_image`, `reject_shaders` (`EDEN_NX2_REJECT_HASH` at runtime; `"reject": false` restores). Without `--call` the script is a stdio MCP server. See `docs/nx2/debug-mcp.md`.
+Methods: `status`, `screenshot` (`save`, `inline`, `reject` for an A/B), `log_tail` (`after`, `contains`), `log_filter`, `capture_frame` (the frame dump below, taken now; `sampled`, `index`), `capture_image`, `reject_shaders` (`EDEN_NX2_REJECT_HASH` at runtime; `"reject": false` restores), `shaders` (loaded program inventory), `pause`, `resume`, `step` (`frames`, `timeout_ms`), `input` (`buttons`, `left`, `right`, `clear`), `input_sequence`, `input_record`, `input_playback` (`at_present`, `absolute`, `pause_at_end`), `read_guest_memory`, `write_guest_memory`, `gpu_memory_map`, `read_gpu_memory`, `write_gpu_memory`. Writes need `confirm: true`, GPU memory goes through the rasterizer at a frame end, and input is an overlay ORed over the player's mapping. `tools/nx2/live_check.py` exercises the whole surface against a booted game. Without `--call` the script is a stdio MCP server. See `docs/nx2/debug-mcp.md`.
 
 - Try a live experiment (screenshot, `reject_shaders` A/B, `capture_frame`, `log_tail`) before asking the owner for a new build or shortcut.
 - Use full 16-hex-digit hashes; shorter ones are refused.
@@ -106,3 +106,9 @@ Use these before guessing. All are off unless the variable is set; pass them as 
 
 - Experiment switches (env flags that pick between candidate fixes) never merge to nx2. A proven fix ships as unconditional behaviour, and a disproven one is dropped.
 - Diagnostic tools (frame dump, `EDEN_NX2_REJECT_HASH`, traces, the debug server) stay in nx2, off unless their variable is set.
+
+## Changelog
+
+`CHANGELOG.md` is the release-notes source: each version's notes come from its `## [X.Y.Z]` section, and `tools/ci/bump-version.sh` moves `## [Unreleased]` into the next version. Add a bullet under `## [Unreleased]` in the same change that makes a user-visible difference: a new feature, a behaviour change, a fix someone would notice, or a new tool. Skip pure refactors, test-only changes and internal comments. Write for the person running the emulator: what changed and what it does for them, in one or two lines, without shader hashes or internal identifiers.
+
+Per-game fix work also keeps its own record: `docs/shader-precompile/learnings.md` (measurements and findings, newest last) and `docs/shader-precompile/todo.json` (the plan, with a `changelog` field per task). Update both in the same commit as the code.

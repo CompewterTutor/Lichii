@@ -23,6 +23,8 @@ This contains documentation created by developers, build instructions, guideline
   - **[Dynarmic](./dynarmic/README.md)**
   - **[HOS Kernel](./HosKernel.md)**
   - **[Settings](./Settings.md)**
+  - **[Switch 2 and debug server](./nx2/debug-mcp.md)** — the loopback debug server, its MCP tools and the live checks
+  - **[Shader precompilation](./shader-precompile/README.md)** — per-title pipeline key lists, measurements and findings ([plan](./shader-precompile/todo.json))
 
 ## Contributing
 

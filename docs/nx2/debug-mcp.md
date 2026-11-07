@@ -41,9 +41,9 @@ with Boost.Asio, as the GDB stub does (`src/core/debugger/debugger.cpp:147`), an
 emulator: it maps method names to handlers. That keeps it unit-testable without a `System`.
 
 `src/core/debugger/nx2_debug_tools.cpp` holds the tools. `Core::System::Impl::Load` starts the
-service once a game has loaded (`src/core/core.cpp:476`), and `ShutdownMainProcess` stops it
-before anything else (`src/core/core.cpp:481`). The member is declared last
-(`src/core/core.cpp:610`), so it is also destroyed first. The tools therefore never see a
+service once a game has loaded (`src/core/core.cpp:481`), and `ShutdownMainProcess` stops it
+before anything else (`src/core/core.cpp:486`). The member is declared last
+(`src/core/core.cpp:615`), so it is also destroyed first. The tools therefore never see a
 half-built or half-destroyed system, and the server works the same under the Qt frontend and
 `eden-cli`.
 
@@ -80,7 +80,7 @@ Three kinds of work, three places:
    `RendererVulkan::Composite` and therefore `rasterizer.TickFrame()`
    (`src/video_core/renderer_vulkan/renderer_vulkan.cpp:269`). Requests for it go through
    `src/video_core/nx2_debug_control.h`, a small mutex-guarded block with one atomic "something
-   is pending" flag. `RasterizerVulkan::TickFrame` (`src/video_core/renderer_vulkan/vk_rasterizer.cpp:1817`)
+   is pending" flag. `RasterizerVulkan::TickFrame` (`src/video_core/renderer_vulkan/vk_rasterizer.cpp:1830`)
    checks the flag and takes the requests at the end of each presented frame. Between frames no
    draw is half-recorded and no pipeline is in use by the caller, so dropping cache entries there
    is safe.
@@ -136,7 +136,7 @@ server is on but idle, its thread sleeps in `epoll`/IOCP.
 | `input` (buttons, sticks, timed sequences) | Owner plays to the spot | Agent walks to the spot itself and replays a repro | 2 |
 | `shaders` (inventory) | Shader dump and offline sweep | List loaded programs: key, hash, stage, address, lowered or rejected with the error | 2 |
 | `switches` (live `EDEN_NX2_*`) | Relaunch per switch | Toggle the observer switches live (classification below) | 2 |
-| `read_guest_memory`, `read_gpu_memory` | GDB stub session or log prints plus a rebuild | Read a range by address | 3 |
+| `read_guest_memory`, `read_gpu_memory` | GDB stub session or log prints plus a rebuild | Read a range by address; `gpu_memory_map` says which addresses are mapped | 3 |
 | `dump_texture`, `dump_buffer` | Frame dump of the whole frame | One resource by GPU address, as PNG plus raw | 3 |
 | `gpu_timings` | `EDEN_NX2_GPU_PROFILE` relaunch, zones only | Per-pass GPU time of one frame | 3 |
 | Capture options (pass range, shader filter) | Not possible | Smaller captures, for example only passes 40 to 60 | 3 |
@@ -160,7 +160,7 @@ reading a running core's context needs the same stop the GDB stub does.
 **`pause`**, **`resume`**, **`step`** `{frames?, timeout_ms?}`. They call the same
 `System::Pause` and `System::Run` the frontend uses, so a paused game is exactly the state the Qt
 window produces when it loses focus. A step has to be driven from the server thread: the present
-counter is bumped by the guest's own present call (`src/core/hle/service/nx2_gsv.h:1742`), and
+counter is bumped by the guest's own present call (`src/core/hle/service/nx2_gsv.h:1738`), and
 pausing from inside that call would suspend the thread that is running. So the server resumes,
 waits for the present count to reach its target, then pauses, reporting the frames it actually
 advanced and `timed_out`. A frame that presents while the pause is landing can push the count one
@@ -233,9 +233,9 @@ environment plus a relaunch plus a replay.
 ### Phase 2: control and input (about 4 to 5 days)
 
 - **pause, resume, step.** Implemented in 1.6.1: the tools call `System::Pause` and `System::Run`
-  (`src/core/core.cpp:279`), the same suspend the frontend uses, and `step {frames}` resumes, waits
+  (`src/core/core.cpp:645`), the same suspend the frontend uses, and `step {frames}` resumes, waits
   for `g_nx2_present_count` to reach its target, then pauses. It is present-granular: the present
-  counter is bumped on the guest's present call (`nx2_gsv.h:1742`), so a frame that lands while
+  counter is bumped on the guest's present call (`nx2_gsv.h:1738`), so a frame that lands while
   the pause arrives can overshoot by one, and the result reports `advanced` and `timed_out`. A
   frontend-registered callback is not needed because Qt's `EmuThread` already observes
   `System::IsPaused`. Use a capture to get an exact frame.
@@ -268,13 +268,14 @@ Live switch classification, from the switches in `src/`:
 
 ### Phase 3: memory, resources and timing (about 1 to 1.5 weeks)
 
-- **read_guest_memory** `{address, size ≤ 1 MiB}`. Use the application process memory
-  (`KProcess::GetMemory().ReadBlock`), as the GDB stub's `m` packet does
+- **read_guest_memory** `{address, size ≤ 1 MiB}`. Implemented in 1.6.3. Use the application
+  process memory (`System::ApplicationMemory()`), as the GDB stub's `m` packet does
   (`src/core/debugger/gdbstub.cpp:237`), with unmapped ranges reported instead of read. It can
   run on the server thread: a racy read of guest RAM is what a debugger does.
-- **read_gpu_memory** `{address, size}`. Use `Tegra::MemoryManager::ReadBlockUnsafe` on the
-  rasterizer thread. The safe read flushes GPU-written pages through the caches, which only that
-  thread may do.
+- **read_gpu_memory**, **write_gpu_memory**, **gpu_memory_map**. Implemented in 1.6.3. The access
+  runs on the rasterizer thread at the next frame end, because the safe read and write flush
+  GPU-written pages through the caches, which only that thread may do. `gpu_memory_map` exposes
+  the page table's mapped ranges so a client can pick an address that will read.
 - **dump_texture** `{gpu_address}` and **dump_buffer** `{gpu_address, size}`. Look the address
   up in the texture cache on the rasterizer thread and reuse `FrameDump::Record`'s readback,
   decode and PNG path for one image.

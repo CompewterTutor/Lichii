@@ -1,0 +1,59 @@
+# Shader precompilation
+
+Goal: stop mid-game pipeline compilation stalls by porting switch2mac's shared pipeline key list to
+Lichii. A per-title list of shader content hashes plus fixed pipeline state is recorded while the
+title plays, then replayed into the pipeline cache on background workers before the game asks for
+those pipelines. Lists carry identifiers only: no shader code, SPIR-V, environments, driver data or
+`vulkan.bin`, so they stay shareable.
+
+## Files
+
+| File | What it is |
+|---|---|
+| [`learnings.md`](./learnings.md) | Measurements and findings, oldest first. Read this before changing the design. |
+| [`todo.json`](./todo.json) | The plan (TideTable): phases, statuses and a changelog per task. |
+
+## What works today
+
+- **Pipeline key lists.** Every pipeline the title builds is recorded into a per-title list, and
+  listed rows are rebuilt on background workers at boot. Verified on OoT.
+- **Budget eviction.** The pipeline cache keeps an LRU memory budget (1536 MB by default) instead of
+  doing mass evictions on idle frames. Measured on OoT: 0 evictions in four minutes against 175
+  before. `EDEN_NX2_PIPELINE_EVICT=legacy` restores the old policy (diagnostic switch, does not
+  merge).
+- **Static inventory.** `tools/nx2/shader_scan` extracts the shader programs inside a NUP container
+  and writes a manifest. OoT's dump holds 39,392 unique NVN2 programs (36,176 BNSH plus BAHS, NDSR
+  and NDVE); an offline sweep lowers 38,801 of them, 1,776 compile and pass `spirv-val`, 68 refuse
+  to lower, and 521 need runtime context. `.bphsh`/`.bphsc`/`.bphnm` are Havok physics, not
+  shaders.
+- **List tooling.** `tools/nx2/keylist_tool.py` inspects, merges and diffs lists (12 tests).
+
+Static pre-lowering is not the delivery mechanism: lowering specialises on runtime uniform values
+and storage pointer types, so a key list of built pipelines, not a precompiled shader archive, is
+what gets shipped.
+
+## Diagnostic switches
+
+All are env flags, off by default unless noted, and none of them merge to `nx2` as a behaviour
+switch: a proven effect ships unconditional.
+
+| Switch | Effect |
+|---|---|
+| `EDEN_NX2_KEYLIST=0` | Stop recording and prefetching. The list is on by default. |
+| `EDEN_NX2_KEYLIST_PREFETCH=0` | Keep recording, but do not build listed state variants early. |
+| `EDEN_NX2_PIPELINE_EVICT=legacy` | Old idle-frame mass eviction instead of the LRU budget. |
+| `EDEN_NX2_PIPELINE_BUDGET_MB=<n>` | Pipeline cache memory budget, default 1536. |
+| `EDEN_NX2_PRELOAD_ALL_PIPELINES=1` | Build every cached pipeline at boot, as before the key list. |
+| `EDEN_NX2_PIPELINE_DIFF=1` | Log what splits a new pipeline from an earlier one that shares its shaders. |
+
+## Open work
+
+- 1.3.2 load title shader programs at boot for key-list builds; 1.3.3 close the 13 lowering gaps the
+  OoT sweep found.
+- 1.4.2 finish the merge workflow; 1.4.1 split rows loaded from a list out of rows this run
+  recorded.
+- 1.5.1 measure end-to-end on OoT and one state-heavy title; 1.5.2 remove the experiment switches
+  and document the shipped behaviour.
+
+The debug server that drives these measurements (pause, step, input, memory) is documented in
+[`../nx2/debug-mcp.md`](../nx2/debug-mcp.md).
