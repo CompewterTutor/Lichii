@@ -500,3 +500,22 @@ Numbers here come from two OoT sessions on the local machine (build `nx2-99ac3d5
   rejects again. It needs the lowering's own expressions mirrored into the pass, so it is the next
   real unit of work rather than a batch edit.
 - Applies to: 1.3.4. `tools/nx2/lower_operand_audit.py` is the scoreboard.
+
+## 2026-11-07 - TLD4 gather under a shadow is a guard, not a missing table entry
+
+- Tried the gather entry (`0xb63`/`0xf63`) with the spans mirrored from the lowering: destination
+  `popcount(mask)` split across bits 16 and 64, coordinates a pair, source B a pair for per-tap
+  packed offsets. The register-pressure mechanics accepted it and the lowering proceeded.
+- `ampere_yoshi_title.cpp:279` then failed. That test asserts a uniform array gather with its
+  destination at the reserved base is *rejected* under a small reserve (`LowerToMaxwellWith(code,
+  4)`), and it failed because the entry made the shadow succeed rather than because the spans were
+  wrong: with `high_uniforms = 4` the reserve is 212, the destination quartet 212-215 maps to a free
+  low quartet, and the instruction lowers.
+- Reverted. Whether a gather is correct when its handle, coordinates and packed per-tap offsets are
+  copied into shadows is not something the operand table decides: the per-tap path also scans the
+  preceding instructions in the unshadowed `code` to prove the offsets are constants, so mixing a
+  shadowed gather with unshadowed producers needs its own analysis and its own test.
+- Learning: the pressure table is not the only gate on these opcodes. Adding an entry can turn a
+  deliberate "unsupported" into a wrong lower, which is exactly why the existing tests assert the
+  rejection. Check what else guards an opcode before listing it.
+- Applies to: 1.3.4. The gather group stays out of the table until shadowed gathers are proven.
