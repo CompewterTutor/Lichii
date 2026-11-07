@@ -407,6 +407,15 @@ json InputPlayback(ToolState& state, const json& params) {
                                              state.dump_directory.generic_string())};
     }
     json file = json::parse(stream);
+    const std::string recorded_program = file.value("program_id", std::string{});
+    if (!recorded_program.empty() &&
+        recorded_program != fmt::format("{:016X}", state.program_id) &&
+        !params.value("force", false)) {
+        throw std::runtime_error{fmt::format(
+            "the recording is for program {}, this boot is {:016X}; pass force=true to try anyway",
+            recorded_program, state.program_id)};
+    }
+    const bool pause_at_end = params.value("pause_at_end", false);
     const u64 recorded_start = file.value("start_present", u64{0});
     const bool absolute = params.value("absolute", false);
     json events = file.at("events");
@@ -437,7 +446,8 @@ json InputPlayback(ToolState& state, const json& params) {
     StopInputThread(state);
     state.input_stop.store(false, std::memory_order_relaxed);
     state.input_thread = std::thread{[&state, steps = std::move(steps), absolute,
-                                      recorded_start, absolute_start, at_present] {
+                                      recorded_start, absolute_start, at_present,
+                                      pause_at_end] {
         // Relative playback keeps the recorded spacing from the moment it starts; absolute
         // playback waits for the frame numbers the recording saw, which only matches in the same
         // boot.
@@ -470,11 +480,17 @@ json InputPlayback(ToolState& state, const json& params) {
                                        event.right_y, event.has_sticks);
         }
         Core::HID::DebugInput::Clear();
+        // A B/A pair is only comparable at the same frame: stopping here makes the recording a
+        // checkpoint the client can step and screenshot from.
+        if (pause_at_end && !state.stopping.load(std::memory_order_relaxed)) {
+            state.system.Pause();
+        }
     }};
     return {{"name", name},
             {"events", steps.size()},
             {"frames", duration},
             {"at_present", at_present},
+            {"pause_at_end", pause_at_end},
             {"mode", absolute ? "absolute" : "relative"}};
 }
 

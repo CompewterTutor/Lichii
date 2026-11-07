@@ -235,6 +235,11 @@ TOOLS = [
                 "at_present": {"type": "integer", "minimum": 0,
                                "description": "Wait for this boot frame before the first event, "
                                               "so two runs start the recording on the same frame."},
+                "pause_at_end": {"type": "boolean",
+                                 "description": "Pause when the recording finishes, so both runs "
+                                                "stop on the same frame."},
+                "force": {"type": "boolean",
+                          "description": "Replay a recording made for another program id."},
             },
             "required": ["name"],
         },

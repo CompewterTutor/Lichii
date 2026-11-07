@@ -355,6 +355,23 @@ same boot. `at_present` waits for a fixed boot frame before the first event, so 
 recording on the same frame even when the client reaches the call at a different time. Either way a
 later `input` call, a new playback or shutdown stops it.
 
+### A boot-to-save chain
+
+A recording can carry the whole boot: title screen, file select, loading the save, and the first
+in-game frame. That is the closest thing to a save state this emulator has, because it reproduces
+the same guest state from a cold boot:
+
+1. Boot with the debug server, start `input_record {name: "oot-kokiri"}` from frame 0.
+2. Drive the menus with `input_sequence` or repeated `input` calls until the save is loaded.
+3. `input_record {stop: true}`; the file records every applied state with its present count.
+4. On any later boot: `input_playback {name: "oot-kokiri", at_present: 0, pause_at_end: true}`.
+   It replays the chain, then pauses on the frame the recording ended, so a second run with a
+   changed setting lands on the same frame and can be compared with `step` and `screenshot`.
+
+The recording stores the program id; replaying it in another title is refused unless `force` is
+set. Recordings live in the dump directory, so they survive restarts and can be copied between
+builds.
+
 Determinism: input timing is exact in frames, but the emulator is not a bit-exact machine. Threads,
 GPU scheduling and driver behaviour still vary, so two runs with the same recording can diverge
 after enough frames. For A/B tests, keep both runs on the same boot starting point and compare the
