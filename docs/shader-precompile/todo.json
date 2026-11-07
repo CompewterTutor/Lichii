@@ -727,8 +727,8 @@
           "complexity": "High",
           "agent": "pro_dev_agent",
           "created_at": "2026-11-07T16:10:04Z",
-          "updated_at": "2026-11-07T16:30:04Z",
-          "changelog": "FMUL, FADD, FFMA (register, immediate and constant buffer forms) and the immediate-lane SHFL now translate straight to IR, with the floating control word mapped 1:1 from the Maxwell equivalent. Guarded instructions become Select(guard, value, old value), which the Maxwell frontend ignores entirely; 138 of 155 FADDs in the captured program are guarded. Uniform-source forms fail with their own reason and wait for 1.7.3. Coverage on the captured OoT compute program: 1884 to 970 unimplemented instructions; 15 opcodes implemented."
+          "updated_at": "2026-11-07T20:54:10Z",
+          "changelog": "FMUL, FADD, FFMA (register, immediate and constant buffer forms) and the immediate-lane SHFL now translate straight to IR, with the floating control word mapped 1:1 from the Maxwell equivalent. Guarded instructions become Select(guard, value, old value), which the Maxwell frontend ignores entirely; 138 of 155 FADDs in the captured program are guarded. Uniform-source forms fail with their own reason and wait for 1.7.3. Coverage on the captured OoT compute program: 1884 to 970 unimplemented instructions; 15 opcodes implemented. Extended beyond the floating families: IMAD, LOP3 (any of the 256 tables, expanded as a bitwise Shannon tree), IADD3, P2R and MUFU (with the SM70 turns-to-radians scale). Coverage on the captured OoT compute program: 680 to 452 unimplemented instructions, 51 opcodes. The remaining tail is memory and uniform constant loads."
         },
         {
           "id": "1.7.3",

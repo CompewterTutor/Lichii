@@ -65,6 +65,8 @@ private:
     void SetUniformPredicate(u32 index, const IR::U1& value);
     [[nodiscard]] IR::U1 PredicateOperand(u32 value, bool uniform);
     [[nodiscard]] IR::U1 Lut3(u32 lut, const IR::U1& a, const IR::U1& b, const IR::U1& c);
+    [[nodiscard]] IR::U32 BitwiseLut3(u32 lut, const IR::U32& a, const IR::U32& b,
+                                      const IR::U32& c);
     [[nodiscard]] IR::F32 ReadFloat(u32 which);
     [[nodiscard]] IR::U32 ReadUint(u32 which);
     [[nodiscard]] IR::FpControl FloatControl() const;
@@ -74,6 +76,11 @@ private:
     void EmitMove();
     void EmitSystemRegisterRead();
     void EmitSetPredicate();
+    void EmitIntegerMultiplyAdd();
+    void EmitLogicLut();
+    void EmitIntegerAdd();
+    void EmitPredicateToRegister();
+    void EmitMultiFunction();
     void EmitUniformMove();
     void EmitPredicateLut();
     void EmitFloatAdd();

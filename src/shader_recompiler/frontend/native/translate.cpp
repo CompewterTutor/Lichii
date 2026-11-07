@@ -409,6 +409,162 @@ void Translator::EmitPredicateLut() {
     ir.SetPred(static_cast<IR::Pred>(target), result);
 }
 
+IR::U32 Translator::BitwiseLut3(u32 lut, const IR::U32& a, const IR::U32& b, const IR::U32& c) {
+    // A bitwise lookup table: each output bit depends on the same bit of the three sources, so the
+    // Shannon expansion is a bitwise select. NVIDIA indexes the table as a | b << 1 | c << 2.
+    const auto bit = [&](u32 index) {
+        return ((lut >> index) & 1) != 0 ? ir.Imm32(0xffffffffU) : ir.Imm32(0);
+    };
+    const auto choose = [&](const IR::U32& selector, const IR::U32& when_set,
+                            const IR::U32& when_clear) {
+        return IR::U32{ir.BitwiseOr(ir.BitwiseAnd(selector, when_set),
+                                    ir.BitwiseAnd(ir.BitwiseNot(selector), when_clear))};
+    };
+    const IR::U32 low_b = choose(c, bit(6), bit(2));
+    const IR::U32 low_a = choose(c, bit(4), bit(0));
+    const IR::U32 high_b = choose(c, bit(7), bit(3));
+    const IR::U32 high_a = choose(c, bit(5), bit(1));
+    const IR::U32 low = choose(b, low_b, low_a);
+    const IR::U32 high = choose(b, high_b, high_a);
+    return choose(a, high, low);
+}
+
+void Translator::EmitIntegerMultiplyAdd() {
+    // IMAD: Ra * immediate + Rc, with the addend optionally negated. The low 32 bits of the product
+    // are the same signed or unsigned, so only the carry forms need their own treatment.
+    const bool negate_c = current.Bits(75, 1) != 0;
+    if (current.words[1] == 1 || (current.words[2] & ~0x2ffU) != 0x078e0000U) {
+        throw Unsupported{"native IMAD carry mode"};
+    }
+    const IR::U32 a = Gpr(current.Bits(24, 8));
+    const IR::U32 product = ir.IMul(a, ir.Imm32(current.words[1]));
+    IR::U32 addend = Gpr(current.Bits(64, 8));
+    if (negate_c) {
+        addend = ir.INeg(addend);
+    }
+    WriteUint(IR::U32{ir.IAdd(product, addend)});
+}
+
+void Translator::EmitLogicLut() {
+    // LOP3: any three-input bitwise table, with an optional predicate set to (result != 0).
+    const u32 opcode = current.Bits(0, 12);
+    const u32 lut = current.Bits(72, 8);
+    const u32 predicate = current.Bits(81, 3);
+    if (current.Bits(80, 1) || current.Bits(87, 4) != 15 ||
+        (opcode == 0x212 && current.Bits(40, 24)) || (opcode == 0xa12 && current.Bits(62, 2))) {
+        throw Unsupported{"native LUT/predicate mode"};
+    }
+    const IR::U32 a = Gpr(current.Bits(24, 8));
+    const IR::U32 b{[&]() -> IR::U32 {
+        switch (opcode) {
+        case 0x212:
+            return Gpr(current.Bits(32, 8));
+        case 0x812:
+            return ir.Imm32(current.words[1]);
+        case 0xa12: {
+            const u32 bank = ConstantBufferBank(current.Bits(54, 5));
+            if (bank >= 18 || (current.Bits(38, 16) % 4) != 0) {
+                throw Unsupported{"native constant buffer address"};
+            }
+            return ir.GetCbuf(ir.Imm32(bank), ir.Imm32(current.Bits(38, 16)));
+        }
+        default:
+            if (current.words[1] >= NUM_UNIFORM_REGISTERS) {
+                throw Unsupported{"native uniform logic source"};
+            }
+            return Uniform(current.words[1]);
+        }
+    }()};
+    const IR::U32 c = Gpr(current.Bits(64, 8));
+    const IR::U32 result = BitwiseLut3(lut, a, b, c);
+    WriteUint(result);
+    if (predicate != 7) {
+        IR::U1 nonzero{ir.INotEqual(result, ir.Imm32(0))};
+        const Guard guard = DecodeGuard(current);
+        if (guard) {
+            const IR::U1 condition{ir.GetPred(static_cast<IR::Pred>(guard.index), guard.negated)};
+            nonzero = IR::U1{ir.Select(
+                condition, nonzero, ir.GetPred(static_cast<IR::Pred>(predicate)))};
+        }
+        ir.SetPred(static_cast<IR::Pred>(predicate), nonzero);
+    }
+}
+
+void Translator::EmitIntegerAdd() {
+    // IADD3 with a zero third source and no carry outputs: the plain three-input add.
+    if ((current.words[2] & ~0xffU) != 0x07ffe000U) {
+        throw Unsupported{"native add carry mode"};
+    }
+    const IR::U32 a = Gpr(current.Bits(24, 8));
+    IR::U32 b = Gpr(current.Bits(32, 8));
+    if (current.Bits(63, 1)) {
+        b = ir.INeg(b);
+    }
+    WriteUint(IR::U32{ir.IAdd(a, b)});
+}
+
+void Translator::EmitPredicateToRegister() {
+    // P2R: insert the seven predicates into the destination's low bits where the mask says so,
+    // keeping every other bit from the merge source.
+    if (current.Bits(76, 2) != 0) {
+        throw Unsupported{"native predicate byte select"};
+    }
+    const u32 mask = current.words[1];
+    if ((mask & ~0x7fU) != 0) {
+        throw Unsupported{"native predicate mask"};
+    }
+    const IR::U32 source = Gpr(current.Bits(24, 8));
+    IR::U32 bits = ir.Imm32(0);
+    for (u32 index = 0; index < 7; ++index) {
+        if (((mask >> index) & 1) == 0) {
+            continue;
+        }
+        const IR::U1 predicate{ir.GetPred(static_cast<IR::Pred>(index))};
+        const IR::U32 value{ir.Select(predicate, ir.Imm32(1U << index), ir.Imm32(0))};
+        bits = IR::U32{ir.BitwiseOr(bits, value)};
+    }
+    const IR::U32 masked{ir.Imm32(mask)};
+    const IR::U32 kept{ir.BitwiseAnd(source, ir.BitwiseNot(masked))};
+    WriteUint(IR::U32{ir.BitwiseOr(kept, ir.BitwiseAnd(bits, masked))});
+}
+
+void Translator::EmitMultiFunction() {
+    // MUFU. Screenspace sine and cosine take their angle in turns on SM70 and later, while the IR
+    // takes radians, so the source is scaled by 2pi first.
+    const u32 operation = current.Bits(74, 6);
+    if (current.Bits(80, 12) != 0) {
+        throw Unsupported{"native MUFU mode"};
+    }
+    const bool turns = operation == 0 || operation == 1;
+    IR::F32 source = ReadFloat(1);
+    if (turns) {
+        source = ir.FPMul(source, ir.Imm32(6.283185307179586476925286766559f));
+    }
+    const IR::F32 value{[&]() -> IR::F32 {
+        switch (operation) {
+        case 0:
+            return ir.FPCos(source);
+        case 1:
+            return ir.FPSin(source);
+        case 2:
+            return ir.FPExp2(source);
+        case 3:
+            return ir.FPLog2(source);
+        case 4:
+            return ir.FPRecip(source);
+        case 5:
+            return ir.FPRecipSqrt(source);
+        case 8:
+            return ir.FPSqrt(source);
+        case 9:
+            return ir.FPTanh(source);
+        default:
+            throw Unsupported{"native MUFU operation"};
+        }
+    }()};
+    WriteFloat(value);
+}
+
 void Translator::EmitFloatAdd() {
     if (current.Bits(81, 10) || current.Bits(91, 1)) {
         throw Unsupported{"native FADD mode"};
@@ -511,6 +667,24 @@ void Translator::Emit() {
     case 0xa02: // MOV   (constant buffer)
     case 0xc02: // MOV   (uniform register)
         EmitMove();
+        return;
+    case 0x824: // IMAD
+        EmitIntegerMultiplyAdd();
+        return;
+    case 0x212: // LOP3 (register)
+    case 0x812: // LOP3 (immediate)
+    case 0xa12: // LOP3 (constant buffer)
+    case 0xc12: // LOP3 (uniform register)
+        EmitLogicLut();
+        return;
+    case 0x210: // IADD3
+        EmitIntegerAdd();
+        return;
+    case 0x803: // P2R
+        EmitPredicateToRegister();
+        return;
+    case 0x308: // MUFU
+        EmitMultiFunction();
         return;
     case 0x919: // S2R
     case 0x9c3: // S2UR

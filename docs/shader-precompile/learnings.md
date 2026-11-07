@@ -681,3 +681,25 @@ Numbers here come from two OoT sessions on the local machine (build `nx2-99ac3d5
 - State on the captured program: 91 control blocks, and structuring now runs until it meets an
   unimplemented opcode instead of failing on shape. The first blocker is `0x824`
   (`IMAD.U32 R5, R3, 0x60, R2`), which is arithmetic, not control flow.
+
+## 2026-11-07 - Native frontend: integer and special-function families
+
+- Added IMAD, LOP3, IADD3, P2R and MUFU, which takes the captured OoT compute program from 680 to
+  452 unimplemented instructions (1884 at the start of the port, so 76% is covered).
+- LOP3 is a bitwise truth table, not a predicate table. The Shannon expansion is valid bit by bit,
+  so the generic case becomes `(a & f(1,b,c)) | (~a & f(0,b,c))` with constants 0 and ~0 at the
+  leaves: 21 IR instructions for any of the 256 tables, and the constant folding pass collapses the
+  simple ones. LUT 0xc0 answers `a & b`, which is what the captured `LOP3.LUT R0, R3, 0xfffc, RZ,
+  0xc0` is doing.
+- MUFU on SM70+ takes sine and cosine angles in *turns*, while the IR takes radians, so the native
+  path multiplies by 2pi before the sine or cosine. The lowering does exactly the same
+  (`0x40c90fdb`); getting this wrong would rotate a whole effect by a factor of 6.28.
+- P2R is not a bitmask move in IR: each predicate is a separate per-lane value, so the register is
+  rebuilt as `(src & ~mask) | sum(select(Pk, 1 << k, 0) & mask)`. One select per mask bit.
+- A real trap: the coverage list is a `std::array<u32, N>` with explicit N. Declaring 52 entries
+  while listing 51 leaves one value-initialised *zero*, which silently marks opcode `0x000` as
+  implemented and breaks the padding rule. The count test caught it (`ImplementedCount() == 52`
+  passed while the padding test failed). Count the initialisers, or let the compiler deduce N.
+- Remaining top of the list is now `0x981` LDG (39), `0x589` (27), `0x986` (27), `0x810` (26),
+  `0x388` (21), `0x984` (21), `0xabb` (20, ULDC) and `0xab9` (18) — memory access and uniform
+  constant loads, which need address analysis rather than one-instruction translations.

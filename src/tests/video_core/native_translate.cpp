@@ -113,6 +113,16 @@ constexpr Instruction ReadTidX{{0x00027919, 0x00000000, 0x00002100, 0x000e2800}}
 constexpr Instruction FloatSetPredicate{{0x2e00720b, 0x000000ff, 0x03f14000, 0x001fe400}};
 /// ISETP.GE.U32.AND P2, PT, R50, R4, PT
 constexpr Instruction IntSetPredicate{{0x3200720c, 0x00000004, 0x03f46070, 0x000fc800}};
+/// IMAD.U32 R5, R3, 0x60, R2
+constexpr Instruction Imad{{0x03057824, 0x00000060, 0x078e0002, 0x001fc800}};
+/// LOP3.LUT R0, R3, 0xfffc, RZ, 0xc0
+constexpr Instruction LogicLut{{0x03007812, 0x0000fffc, 0x078ec0ff, 0x044fe400}};
+/// MUFU.SIN R5, R39
+constexpr Instruction MultiFunction{{0x00057308, 0x00000027, 0x00000400, 0x0003e200}};
+/// P2R R3, PR, RZ, 0x4
+constexpr Instruction PredicateToRegister{{0xff037803, 0x00000004, 0x00000000, 0x000fca00}};
+/// IADD3 R30, R29, R39, RZ
+constexpr Instruction IntegerAdd{{0x1d1e7210, 0x00000027, 0x07ffe0ff, 0x000fc800}};
 
 } // Anonymous namespace
 
@@ -217,6 +227,53 @@ TEST_CASE("FSETP and ISETP set predicates", "[video_core][native]") {
     CHECK(ip->Arg(0).Pred() == IR::Pred::P2);
     // GE.U32 becomes a greater-than-or-equal comparison with an unsigned source.
     CHECK(integer.Find(IR::Opcode::UGreaterThanEqual) != nullptr);
+}
+
+TEST_CASE("IMAD multiplies and adds", "[video_core][native]") {
+    const Translated imad{Imad};
+    REQUIRE(imad.Find(IR::Opcode::IMul32) != nullptr);
+    REQUIRE(imad.Find(IR::Opcode::IAdd32) != nullptr);
+    const IR::Inst* store = imad.Find(IR::Opcode::SetRegister);
+    REQUIRE(store != nullptr);
+    CHECK(store->Arg(0).Reg() == IR::Reg::R5);
+}
+
+TEST_CASE("LOP3 with the AND table reduces to a bitwise and", "[video_core][native]") {
+    // LUT 0xc0 is a & b, so the generic expansion has to end up as the and of the two sources.
+    const Translated lut{LogicLut};
+    const IR::Inst* store = lut.Find(IR::Opcode::SetRegister);
+    REQUIRE(store != nullptr);
+    CHECK(store->Arg(0).Reg() == IR::Reg::R0);
+    CHECK(lut.Count(IR::Opcode::BitwiseAnd32) >= 1);
+    CHECK(lut.Count(IR::Opcode::BitwiseNot32) >= 1); // the ~c terms of the expansion
+}
+
+TEST_CASE("MUFU scales turns to radians for sine", "[video_core][native]") {
+    const Translated sine{MultiFunction};
+    REQUIRE(sine.Find(IR::Opcode::FPSin) != nullptr);
+    // SM70+ takes the angle in turns, so a multiply by 2pi has to sit in front of the sine.
+    REQUIRE(sine.Find(IR::Opcode::FPMul32) != nullptr);
+    const IR::Inst* store = sine.Find(IR::Opcode::SetRegister);
+    REQUIRE(store != nullptr);
+    CHECK(store->Arg(0).Reg() == IR::Reg::R5);
+}
+
+TEST_CASE("P2R collects predicates into register bits", "[video_core][native]") {
+    const Translated p2r{PredicateToRegister};
+    const IR::Inst* store = p2r.Find(IR::Opcode::SetRegister);
+    REQUIRE(store != nullptr);
+    CHECK(store->Arg(0).Reg() == IR::Reg::R3);
+    // Mask bit 2 is the only one set, so exactly one predicate is collected.
+    CHECK(p2r.Count(IR::Opcode::SelectU32) == 1);
+    CHECK(p2r.Find(IR::Opcode::GetPred) != nullptr);
+}
+
+TEST_CASE("IADD3 adds two registers", "[video_core][native]") {
+    const Translated add{IntegerAdd};
+    REQUIRE(add.Find(IR::Opcode::IAdd32) != nullptr);
+    const IR::Inst* store = add.Find(IR::Opcode::SetRegister);
+    REQUIRE(store != nullptr);
+    CHECK(store->Arg(0).Reg() == IR::Reg::R30);
 }
 
 TEST_CASE("Opcode gaps fail instead of guessing", "[video_core][native]") {
