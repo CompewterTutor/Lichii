@@ -452,3 +452,30 @@ Numbers here come from two OoT sessions on the local machine (build `nx2-99ac3d5
   remaining gaps to be reached only after several rounds.
 - Test: `src/tests/video_core/ampere_register_pressure.cpp` checks the captured LEA, FMUL, FFMA and
   shift instructions plus synthesised IMNMX/R2UR cases, and that an unknown opcode still refuses.
+
+## 2026-11-06 - The pressure pass cannot be made total by guessing; the operand lists must be filled in
+
+- Measured the drift: `lower_to_maxwell.h` handles 234 native opcodes, `register_pressure.h` lists
+  operands for 94. The other 140 reject any program that needs a shadow for one of them. That is the
+  whole "native register shadowing mode" class, and it is why the OoT sweep keeps finding them one
+  game program at a time. `tools/nx2/lower_operand_audit.py` prints the difference on demand.
+- Tried the obvious shortcut: an unknown opcode falls back to the convention the lowering already
+  uses for "does this instruction touch a high register" (fields 16, 24 and 64 always, 32 only when
+  bits 9-11 say it is a register). It lowers correctly for the OoT cases, but it breaks deliberate
+  guards that the test suite already encodes: `Fast Fusion` and `Yoshi` assert that an opcode
+  without an operand list is rejected even when the borrow would fit. The reason is sound: a wrong
+  operand list rewrites a field that is not a register and silently corrupts the program, while a
+  rejection costs one skipped draw and a log line. Reverted.
+- Learning: the lowering's own high-register test is not a safe source for the rewrite set. It only
+  decides whether a copy is needed; it never has to know that a field is a register rather than an
+  immediate, because an immediate that happens to be at or above the base only triggers an extra
+  (harmless) copy decision. Rewriting needs the precise answer.
+- Learning: case groups in the lowering are not uniform either. `0x211`/`0x811`/`0xa11`/`0xc11`
+  share one body, but `0x211` reads three registers and `0xa11`/`0xc11` read a constant-buffer or
+  uniform operand instead, which is why the pressure pass lists them differently. Each opcode has
+  to be judged on its own branch inside the shared body.
+- Method for the remaining audit: for each missing opcode, read its branch (not its label group),
+  list the fields that branch reads as guest registers, and where the body uses the `operand(i)`
+  helper resolve it through that helper's `form = Bits(9, 3)` mapping (which=0 is bits 24; 1 and 2
+  are bits 32 or 64 depending on the form). Validate a batch with the sweep over the known-failing
+  OoT programs and the whole `[video_core]` suite, which is what catches a wrong list.

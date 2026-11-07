@@ -70,10 +70,15 @@ TEST_CASE("Register shadows cover IMNMX, its uniform form and R2UR", "[video_cor
     CheckShadowed(r2ur);
 }
 
-TEST_CASE("An opcode with unknown operands still refuses to be shadowed",
+TEST_CASE("An opcode without an operand list refuses rather than guessing",
           "[video_core][ampere][pressure]") {
+    // A wrong operand list rewrites a field that is not a register and corrupts the program, so an
+    // opcode the list has not seen is rejected; the lowering's failure offset names the
+    // instruction, which is how its entry gets added here.
     Instruction unknown{0, 0, 0, 0};
     SetBits(unknown, 0, 12, 0x999);
     SetBits(unknown, 16, 8, 220);
+    SetBits(unknown, 24, 8, 200);
+    SetBits(unknown, 64, 8, 217);
     CHECK_FALSE(PrepareRegisterPressure(unknown, 216).valid);
 }

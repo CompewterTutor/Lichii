@@ -258,6 +258,10 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
         break;
     }
     default:
+        // An opcode this list has not been told about refuses rather than guessing: a wrong
+        // operand list rewrites a field that is not a register and silently corrupts the program.
+        // The failure offset names the instruction, so the entry can be added here from its case
+        // body in lower_to_maxwell.h.
         result.valid = false;
         return result;
     }
