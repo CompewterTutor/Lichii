@@ -798,9 +798,9 @@
         },
         {
           "id": "1.7.6",
-          "title": "Parity gate, then make the native frontend the default",
+          "title": "Parity gate, then prefer the native frontend",
           "status": "pending",
-          "goal": "Prove the native frontend against the lowering: same SPIR-V where the lowering already works, spirv-val clean where it does not. Then switch the default and delete lower_to_maxwell.h and register_pressure.h.",
+          "goal": "Prove the native frontend against the lowering: same SPIR-V where the lowering already works, spirv-val clean where it does not. Then try the native frontend first and keep the lowering as the permanent fallback for any program it cannot translate. The lowering is not hardware-specific: both frontends emit SPIR-V, so the host GPU never enters the decision. \"Blackwell\" here is the guest instruction set the game shipped, not the player's card.",
           "touches": [
             "src/shader_recompiler/frontend/native/",
             "src/shader_recompiler/frontend/ampere/",
@@ -809,7 +809,8 @@
           "success": [
             "Corpus parity: no program the lowering handles produces different SPIR-V",
             "A full OoT session plus the other titles' dumps render identically",
-            "The lowering table and the pressure pass are gone"
+            "Throughput: native first, lowering only on programmes the native frontend reports as missing",
+            "lower_to_maxwell.h and register_pressure.h stay in the tree as the fallback, unreachable for fully covered programmes"
           ],
           "tests": "Sweep the corpus with both frontends and diff; play OoT end to end.",
           "prerequisites": [
@@ -820,8 +821,8 @@
           ],
           "complexity": "Very High",
           "created_at": "2026-11-07T16:10:04Z",
-          "updated_at": "2026-11-07T16:10:04Z",
-          "changelog": ""
+          "updated_at": "2026-11-07T16:15:41Z",
+          "changelog": "Scope corrected: the Maxwell lowering survives the parity gate as the fallback translator. The shader path is host-GPU independent (both frontends emit SPIR-V), so keeping it is not a compatibility hedge for older cards; it is the fallback for opcodes and proofs the native frontend does not cover. Only the case where every programme is covered would make it dead code."
         }
       ]
     }

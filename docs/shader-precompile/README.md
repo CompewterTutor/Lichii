@@ -45,7 +45,9 @@ files competing for 255 slots), the per-form mode-word matching, and the encodin
 proofs (gather offsets, 64-bit carries). IR has no uniform register file, so UR0-UR63 become ordinary
 SSA values rather than an R216-R245 remap.
 
-It starts as a measurement, not a replacement: the lowering stays the default and the oracle.
+It starts as a measurement, not a replacement: the lowering stays the default and the oracle,
+and it keeps that role as the permanent fallback. Both frontends emit SPIR-V, so the choice
+never depends on the host GPU: "native" means the guest instruction set, not the player's card.
 
 ```sh
 build-sweep/bin/shader-sweep <program.bin> --stage compute --format instructions --native
