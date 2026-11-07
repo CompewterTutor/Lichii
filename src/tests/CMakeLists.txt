@@ -18,6 +18,7 @@ add_executable(tests
     audio_core/sysmix_sink.cpp
     audio_core/sysmix_test_context.h
     video_core/ampere_starfox_test10.cpp
+    video_core/ampere_uldc_indexed.cpp
     video_core/ampere_yoshi_title.cpp
     video_core/ampere_yoshi_compute.cpp
     video_core/texture_rect_descriptor.cpp

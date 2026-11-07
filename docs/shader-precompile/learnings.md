@@ -392,3 +392,42 @@ Numbers here come from two OoT sessions on the local machine (build `nx2-99ac3d5
 - Applies to: phase 1.4.1, and it is the input 1.4.2 needs for a shared list.
 - Re-check when: a fetched list gets its own directory, since the contribution then has to name the
   list it is missing rows from.
+
+## 2026-11-06 - Indexed uniform loads carry subword sizes; the sweep fails one gap at a time
+
+- Gap closed: `0xabb` (ULDC indexed) refused width 0 and 2 because `subword_load` was written for
+  the direct form only. Maxwell's `LDC` decodes U8/U16 in every mode, and the indexed emit path
+  already passed the width and the index register through, so the fix is to accept both widths for
+  both forms (still with the alignment, bank, signed-offset and mode-word checks). All 20 OoT
+  programs that failed here were compute shaders with width 0 or 2.
+- Result: 4 of those 20 now lower completely; the other 16 fail at the *next* instruction. The
+  realignment with the debug server shows the world renders correctly at Kokiri Forest, so the
+  change does not disturb the shaders that already worked.
+- Learning: a program holds several gaps. The sweep reports only its first failure, so a fix that
+  makes 20 programs "pass this check" mostly moves them to a new error. Re-check the affected
+  programs after each change with `shader-sweep --lower-only` rather than trusting the first error
+  message.
+- Remaining chain, as of this pass (68 programs total, 4 now lower):
+  | Programs | Message | Instruction |
+  |---:|---|---|
+  | 14 | per-tap gather control-flow proof | `0xb63` |
+  | 10 | LEA carry/high mode | `0x291` uniform LEA whose bits 81-83 carry-out is 2 |
+  | 8 | call linkage mode | `0x944` |
+  | 4 | unsupported native opcode | `0x905` fragment, `00017905 7fffffff 0021f000` |
+  | 4 | unsupported native opcode | `0xc08` fragment, `01017c08 00000004 08800000` |
+  | 4 | packed float-to-byte mode | `0x243` |
+  | 3 + 3 | per-tap gather operands / offset proof | `0xb63` |
+  | 2 | unsupported native opcode | `0x3a9` compute, `000073a9 00000008 001ee109` |
+  | 2 | register shadowing mode | `0x217` |
+  | 2 | texel fetch mode or descriptor binding | `0xb66` |
+  | 2 | global load uniform addressing mode | `0x981` |
+  | 2 | byte-to-float conversion mode | `0x243`-family |
+  | 2 | uniform constant load mode | `0xabb` width 0, offset `0xffff` |
+  | 1 | unsupported native opcode | `0x481` compute, `020c0481 00000000 00000000` |
+  | 1 | uniform shift mode | `0x899` |
+  | 1 | register shadowing mode | `0x3c2` vertex |
+- Open question for the two remaining ULDC failures: offset `0xffff` on a subword load is either
+  -1 byte (fits Maxwell's signed 16-bit LDC offset) or +65535. The current guard refuses it as
+  unrepresentable, and the Ampere field alone does not settle it; a decode with nvdisasm on the
+  captured instruction, or a visual A/B of the affected compute shaders, would.
+- Applies to: phase 1.3.3, which is now in progress rather than a single change.

@@ -327,9 +327,11 @@ TEST_CASE("Star Fox ULDC U16 rejects unrepresentable offsets and unsupported mod
         CHECK_FALSE(lowered);
         CHECK(lowered.instructions.empty());
     }
+    // The indexed form needs its own mode word (bit 91 set); the direct form's word must stay
+    // rejected there.
     auto indexed = CapturedUniformLoad;
     SetBits(indexed, 0, 12, 0xabb);
-    SetBits(indexed, 91, 1, 1);
+    SetBits(indexed, 91, 1, 0);
     CHECK_FALSE(LowerToMaxwell(std::array{indexed, Exit}));
 }
 

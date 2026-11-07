@@ -35,6 +35,9 @@ New entries go under `## [Unreleased]`; `tools/ci/bump-version.sh` turns them in
 
 ### Fixed
 
+- Ocarina of Time's compute shaders that read a byte or a halfword through an indexed uniform load
+  now translate instead of being skipped, which removes their fallback draws on the affected
+  passes.
 - Recorded input replays again: recordings store buttons as hex text, which the playback path fed
   through the button-name parser, so every replay failed with `unknown button`.
 - `input_playback` reports how many events it replays instead of always `0`.
