@@ -101,6 +101,46 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
         operand(16);
         operand(24);
         break;
+    case 0x822: // FSWZADD: two guest sources and a destination.
+        operand(16);
+        operand(24);
+        operand(32);
+        break;
+    case 0x816: // PRMT: the two inputs are bits 24-31 and 64-71.
+        operand(16);
+        operand(24);
+        operand(64);
+        break;
+    case 0x803: // P2R merges into the guest register at bits 24-31.
+        operand(16);
+        operand(24);
+        break;
+    case 0x840: // HMNMX2 with an immediate source, as the register form 0x240.
+        operand(16);
+        operand(24);
+        break;
+    case 0x3c4: // REDUX reads the guest register at bits 24-31 and writes a uniform result.
+        operand(24);
+        break;
+    case 0x430:
+    case 0x630: // HADD2 immediate and cbuf sources, as the register form 0x230.
+        operand(16);
+        operand(24);
+        break;
+    case 0x301: // BREV: the source register is the low byte of words[1], bits 32-39.
+        operand(16);
+        operand(32);
+        break;
+    case 0x300:
+    case 0x309: // FLO and POPC: the source is bits 32-39 or 64-71 depending on the form.
+        operand(16);
+        operand(32);
+        operand(64);
+        break;
+    case 0xd00:
+    case 0xd09: // The uniform source forms: bits 32-39 holds a uniform index, never a guest one.
+        operand(16);
+        break;
     case 0x3c2: // R2UR reads one guest register; its destination is a uniform register.
         operand(24);
         break;
