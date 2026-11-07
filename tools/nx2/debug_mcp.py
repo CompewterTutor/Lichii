@@ -232,6 +232,9 @@ TOOLS = [
             "properties": {
                 "name": {"type": "string"},
                 "absolute": {"type": "boolean"},
+                "at_present": {"type": "integer", "minimum": 0,
+                               "description": "Wait for this boot frame before the first event, "
+                                              "so two runs start the recording on the same frame."},
             },
             "required": ["name"],
         },

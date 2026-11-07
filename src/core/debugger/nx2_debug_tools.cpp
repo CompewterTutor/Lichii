@@ -429,15 +429,23 @@ json InputPlayback(ToolState& state, const json& params) {
     }
     const u64 duration = steps.back().present - recorded_start;
     const u64 absolute_start = steps.front().present;
+    // Waiting for a fixed boot frame before the first event is what makes two runs comparable:
+    // both start the recording at the same present, so the spacing lands on the same frames.
+    const u64 at_present = params.value("at_present", u64{0});
 
     std::scoped_lock lock{state.control_mutex};
     StopInputThread(state);
     state.input_stop.store(false, std::memory_order_relaxed);
     state.input_thread = std::thread{[&state, steps = std::move(steps), absolute,
-                                      recorded_start, absolute_start] {
+                                      recorded_start, absolute_start, at_present] {
         // Relative playback keeps the recorded spacing from the moment it starts; absolute
         // playback waits for the frame numbers the recording saw, which only matches in the same
         // boot.
+        while (at_present != 0 && Presents() < at_present &&
+               !state.input_stop.load(std::memory_order_relaxed) &&
+               !state.stopping.load(std::memory_order_relaxed)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{1});
+        }
         u64 base{};
         if (absolute) {
             while (Presents() < absolute_start && !state.input_stop.load(std::memory_order_relaxed) &&
@@ -466,6 +474,7 @@ json InputPlayback(ToolState& state, const json& params) {
     return {{"name", name},
             {"events", steps.size()},
             {"frames", duration},
+            {"at_present", at_present},
             {"mode", absolute ? "absolute" : "relative"}};
 }
 

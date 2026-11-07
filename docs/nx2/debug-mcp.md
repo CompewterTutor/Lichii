@@ -351,7 +351,9 @@ it was applied at. Stopping writes `<dump dir>/<name>.json`:
 `input_playback {name, absolute?}` replays it on the present-count clock. Relative playback
 (default) keeps the recorded spacing from the moment it starts, so the same recording works on a
 fresh boot; absolute playback waits for the recorded present numbers, which only matches inside the
-same boot. Either way a later `input` call, a new playback or shutdown stops it.
+same boot. `at_present` waits for a fixed boot frame before the first event, so two runs start the
+recording on the same frame even when the client reaches the call at a different time. Either way a
+later `input` call, a new playback or shutdown stops it.
 
 Determinism: input timing is exact in frames, but the emulator is not a bit-exact machine. Threads,
 GPU scheduling and driver behaviour still vary, so two runs with the same recording can diverge
