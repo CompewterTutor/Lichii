@@ -388,8 +388,8 @@
           "complexity": "Medium",
           "agent": "mid_dev_agent",
           "created_at": "2026-11-07T05:59:29Z",
-          "updated_at": "2026-11-07T06:50:18Z",
-          "changelog": "First batch: 8 opcodes (FADD 0x821/0xa21/0xe21, FMNMX 0x809/0xa09/0xc09, F2F 0x304, IDP 0x226), taking the audit from 140 missing to 132. Rule: a sibling whose branch differs only in where source B comes from can reuse the register form list, because a uniform index or a cbo address in that field is below the reserved base and is never rewritten. [video_core] stays at the two known failures."
+          "updated_at": "2026-11-07T06:52:10Z",
+          "changelog": "First batch: 8 opcodes (FADD 0x821/0xa21/0xe21, FMNMX 0x809/0xa09/0xc09, F2F 0x304, IDP 0x226), taking the audit from 140 to 132. Rule: a sibling whose branch differs only in where source B comes from can reuse the register form list, because a uniform index or a cbo address in that field is below the reserved base and is never rewritten. [video_core] stays at the two known failures. Second: ULDC 0xab9/0xabb (destination plus the indexed form index register), audit at 130. The gather family (0xb63/0xf63) is next and needs component counts mirrored from the lowering (mask popcount, dimension, per-tap offsets), not a flat list."
         }
       ]
     },

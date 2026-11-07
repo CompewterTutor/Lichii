@@ -96,6 +96,11 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
         operand(24);
         operand(32);
         break;
+    case 0xab9: // ULDC: the destination is a uniform register; the indexed form adds a guest
+    case 0xabb: // index register at bits 24-39, which the direct form leaves zero.
+        operand(16);
+        operand(24);
+        break;
     case 0x3c2: // R2UR reads one guest register; its destination is a uniform register.
         operand(24);
         break;
