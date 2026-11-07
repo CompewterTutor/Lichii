@@ -51,8 +51,8 @@ never depends on the host GPU: "native" means the guest instruction set, not the
 
 ```sh
 build-sweep/bin/shader-sweep <program.bin> --stage compute --format instructions --native
-# {"phase":"native","implemented_opcodes":15,"translated_instructions":...,
-#  "unimplemented_instructions":970,"unimplemented":[{"count":59,"opcode":"0x20b"}, ...],
+# {"phase":"native","implemented_opcodes":27,"translated_instructions":...,
+#  "unimplemented_instructions":813,"unimplemented":[{"count":59,"opcode":"0x20b"}, ...],
 #  "status":"blocked","error":{"code":"translation_failed",...}}
 ```
 
@@ -87,9 +87,9 @@ switch: a proven effect ships unconditional.
   still missing, which rejects a program whenever a high guest register forces a shadow copy).
   `tools/nx2/lower_operand_audit.py` prints the gap.
 - 1.4.2 finish the merge workflow.
-- 1.7 the native frontend: the scaffold, the coverage scoreboard and the arithmetic families
-  (FMUL, FADD, FFMA, immediate SHFL) are in place. Uniform registers as SSA, gathers, atomics and the
-  parity gate follow (1.7.3 to 1.7.6).
+- 1.7 the native frontend: the scaffold, the coverage scoreboard, the arithmetic families
+  (FMUL, FADD, FFMA, immediate SHFL) and uniform registers and predicates as SSA values are in
+  place. Gathers, atomics and the parity gate follow (1.7.4 to 1.7.6).
 - 1.5.1 measure end-to-end on OoT and one state-heavy title; 1.5.2 remove the experiment switches
   and document the shipped behaviour.
 

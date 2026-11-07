@@ -14,6 +14,17 @@
 
 namespace Shader::Native {
 
+/// Native uniform registers UR0-UR63 live in their own IR register bank above the 256 general
+/// registers. Nothing is remapped or copied, which is what makes the lowering's R216-R245
+/// reservation, its shadow copies and its 118-opcode pressure table unnecessary here.
+constexpr u32 NUM_UNIFORM_REGISTERS{64};
+constexpr u32 UNIFORM_REGISTER_BASE{512};
+
+/// IR has no uniform predicate file, so UP0-UP6 are ordinary registers holding the hardware's own
+/// representation: 0 for false and all ones for true (the bits R239 carries on Maxwell).
+constexpr u32 NUM_UNIFORM_PREDICATES{7};
+constexpr u32 UNIFORM_PREDICATE_BASE{UNIFORM_REGISTER_BASE + NUM_UNIFORM_REGISTERS};
+
 /// Translates a native NVN2 instruction to IR directly, without rewriting it into Maxwell encoding
 /// first. Registers are ordinary IR registers and the SSA rewrite pass treats them exactly as it
 /// does for Maxwell programs, so no shadow copies or reserved register bases are involved.
@@ -47,13 +58,22 @@ private:
     void Emit();
 
     [[nodiscard]] IR::Reg Register(u32 index) const;
+    [[nodiscard]] IR::Reg UniformRegister(u32 index) const;
     [[nodiscard]] IR::U32 Gpr(u32 index);
+    [[nodiscard]] IR::U32 Uniform(u32 index);
+    [[nodiscard]] IR::U1 UniformPredicate(u32 index);
+    void SetUniformPredicate(u32 index, const IR::U1& value);
+    [[nodiscard]] IR::U1 PredicateOperand(u32 value, bool uniform);
+    [[nodiscard]] IR::U1 Lut3(u32 lut, const IR::U1& a, const IR::U1& b, const IR::U1& c);
     [[nodiscard]] IR::F32 ReadFloat(u32 which);
     [[nodiscard]] IR::U32 ReadUint(u32 which);
     [[nodiscard]] IR::FpControl FloatControl() const;
     void WriteFloat(const IR::F32& value);
     void WriteUint(const IR::U32& value);
 
+    void EmitMove();
+    void EmitUniformMove();
+    void EmitPredicateLut();
     void EmitFloatAdd();
     void EmitFloatMultiply();
     void EmitFloatFusedMultiplyAdd();

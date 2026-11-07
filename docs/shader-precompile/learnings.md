@@ -602,3 +602,31 @@ Numbers here come from two OoT sessions on the local machine (build `nx2-99ac3d5
   the control-flow and system-opcode work that 1.7.5 and 1.7.6 carry.
 - Learning: the decode helper is the piece worth keeping shared. Every field the native frontend
   needs is already written down in the lowering, so the port's cost is IR semantics, not bit layout.
+
+## 2026-11-07 - Native frontend 1.7.3: uniform registers and predicates as SSA values
+
+- UR0-UR63 live in their own IR register bank (`UNIFORM_REGISTER_BASE = 512`) and are read with a
+  plain `GetRegister`. Nothing is remapped into R216-R245, no copy is inserted, and the pressure
+  table is not consulted, because the native path has no second register file competing for the 256
+  general registers.
+- IR has no uniform predicate file. UP0-UP6 are ordinary registers holding the hardware's own
+  representation (0 or all ones, the bits R239 carries on Maxwell), and `UniformPredicate` turns that
+  mask into an `INotEqual(..., 0)` condition when a predicate value is needed.
+- PLOP3.LUT (`0x81c`) becomes seven `Select` instructions over the eight truth-table bits. The LUT
+  index convention is `a | b << 1 | c << 2` with operands in assembly order, confirmed against the
+  captured copy idiom `PLOP3.LUT P0, PT, PT, PT, UP0, 0x80, 0x0`: only table entry 7 is set, so the
+  result is PT & PT & UP0 = UP0. The three source fields are bits 87-90, 77-80 and 68-71, and bit 67
+  makes the third source a uniform predicate — the same fields the lowering reads.
+- Uniform instructions guard with a uniform predicate rather than a per-lane one (UMOV, and the
+  uniform-predication list the lowering keeps), so their guard is read from the UP bank.
+- Measurements on the captured OoT compute program: 970 to 813 unimplemented instructions, 82
+  distinct opcodes, 27 opcodes implemented. The uniform group accounted for 94 instructions
+  (`0x81c` 50, `0xc20` 20, `0xc02` 17, `0xc82` 5, `0x882` 1, `0xe23` 1); MOV added 63 more.
+- Correction to the 1.7.3 plan: no program in the corpus fails the lowering with "native register
+  shadowing mode", so the original success criterion ("a captured program using UR28+ lowers without
+  shadow copies") cannot be demonstrated by a lowering failure disappearing. The property holds by
+  construction instead — there is no reserved base to remap into — and the progress shows up as the
+  uniform opcodes above translating.
+- Whole-program translation still stops at instruction 0: the program opens with `0x919`, which
+  nvdisasm decodes as `S2R R2, SR_TID.X`. System opcodes and control flow are the next real gate,
+  not arithmetic.

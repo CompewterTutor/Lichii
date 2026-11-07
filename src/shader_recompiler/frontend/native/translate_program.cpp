@@ -13,14 +13,15 @@ namespace {
 
 /// Opcodes whose IR translation is implemented. Every entry needs a test with a captured
 /// instruction: the ISA is undocumented, so "it looks like the Maxwell opcode" is not evidence.
-/// Currently only the opcodes with no operands at all, which keeps this honest until the first
-/// arithmetic family lands.
-constexpr std::array<u32, 15> Implemented{
-    0x918, // NOP
-    0x220, 0x820, 0xa20,          // FMUL, register/immediate/cbuf second source
-    0x221, 0x421, 0x621, 0x821, 0xa21, // FADD
-    0x223, 0x423, 0x623, 0x823, 0xa23, // FFMA
-    0xf89, // SHFL with an immediate lane
+constexpr std::array<u32, 27> Implemented{
+    0x918,                                               // NOP
+    0x220, 0x820, 0xa20, 0xc20,                          // FMUL
+    0x221, 0x421, 0x621, 0x821, 0xa21, 0xc21, 0xe21,     // FADD
+    0x223, 0x423, 0x623, 0x823, 0xa23, 0xc23, 0xe23,     // FFMA
+    0xf89,                                               // SHFL with an immediate lane
+    0x202, 0x802, 0xa02, 0xc02,                          // MOV register/immediate/cbuf/uniform
+    0x882, 0xc82,                                        // UMOV immediate/uniform
+    0x81c,                                               // PLOP3.LUT
 };
 
 } // Anonymous namespace

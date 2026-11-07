@@ -188,14 +188,57 @@ TEST_CASE("SHFL with an immediate lane translates to a shuffle", "[video_core][n
     CHECK(store->Arg(0).Reg() == IR::Reg::R39);
 }
 
-TEST_CASE("Opcode and form gaps fail instead of guessing", "[video_core][native]") {
+TEST_CASE("Opcode gaps fail instead of guessing", "[video_core][native]") {
     Translated program;
     // ATOM GLOBAL CAS has no IR translation yet.
     CHECK_FALSE(program.translator.Translate(Instruction{{0x000093a9, 0, 0, 0}}));
     CHECK(program.translator.Error() == "unsupported native opcode");
+}
 
-    // FFMA form 6 takes a uniform source, which becomes an SSA value only in 1.7.3.
-    CHECK_FALSE(program.translator.Translate(
-        Instruction{{0x00077c23, 0x00000004, 0x00010009, 0x000fe200}}));
-    CHECK(program.translator.Error() == "native uniform source");
+TEST_CASE("Uniform registers are their own SSA values", "[video_core][native]") {
+    // FMUL.FTZ R7, R38, UR15: the uniform index is the low byte of word 1.
+    const Translated uniform{{0x26077c20, 0x0000000f, 0x08410000, 0x008fe200}};
+    REQUIRE(uniform.Find(IR::Opcode::FPMul32) != nullptr);
+    bool read_uniform{};
+    for (const IR::Inst& inst : uniform.block) {
+        if (inst.GetOpcode() == IR::Opcode::GetRegister) {
+            const auto reg = inst.Arg(0).Reg();
+            read_uniform |= static_cast<u32>(reg) ==
+                            Shader::Native::UNIFORM_REGISTER_BASE + 15;
+        }
+    }
+    CHECK(read_uniform);
+    // No shadow copy and no reserved base: the uniform register is read directly.
+    CHECK(uniform.Find(IR::Opcode::SetRegister)->Arg(0).Reg() == IR::Reg::R7);
+}
+
+TEST_CASE("MOV reaches the uniform register file and constant buffer", "[video_core][native]") {
+    // MOV R8, RZ
+    const Translated zero{{0x00087202, 0x000000ff, 0x00000f00, 0x00afe200}};
+    CHECK(zero.Find(IR::Opcode::SetRegister)->Arg(0).Reg() == IR::Reg::R8);
+
+    // MOV R6, UR4
+    const Translated from_uniform{{0x00060c02, 0x00000004, 0x00000f00, 0x0000e200}};
+    const IR::Inst* store = from_uniform.Find(IR::Opcode::SetRegister);
+    REQUIRE(store != nullptr);
+    CHECK(store->Arg(0).Reg() == IR::Reg::R6);
+}
+
+TEST_CASE("Uniform predicates fold into a predicate LUT", "[video_core][native]") {
+    // PLOP3.LUT P0, PT, PT, PT, UP0, 0x80, 0x0 copies UP0 into P0 through the lookup table.
+    const Translated lut{{0x0000781c, 0x00000000, 0x03f0f008, 0x000fda00}};
+    const IR::Inst* store = lut.Find(IR::Opcode::SetPred);
+    REQUIRE(store != nullptr);
+    CHECK(store->Arg(0).Pred() == IR::Pred::P0);
+    // The table is expanded as seven selects over the eight truth-table entries.
+    CHECK(lut.Count(IR::Opcode::SelectU1) == 7);
+    // The uniform predicate is read out of its own bank, not a copied register.
+    bool read_uniform_predicate{};
+    for (const IR::Inst& inst : lut.block) {
+        if (inst.GetOpcode() == IR::Opcode::GetRegister) {
+            read_uniform_predicate |= static_cast<u32>(inst.Arg(0).Reg()) ==
+                                      Shader::Native::UNIFORM_PREDICATE_BASE;
+        }
+    }
+    CHECK(read_uniform_predicate);
 }

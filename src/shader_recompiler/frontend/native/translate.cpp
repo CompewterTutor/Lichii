@@ -44,6 +44,65 @@ IR::U32 Translator::Gpr(u32 index) {
     return ir.GetReg(Register(index));
 }
 
+IR::Reg Translator::UniformRegister(u32 index) const {
+    if (index >= NUM_UNIFORM_REGISTERS) {
+        throw Unsupported{"native uniform register index"};
+    }
+    return static_cast<IR::Reg>(UNIFORM_REGISTER_BASE + index);
+}
+
+IR::U32 Translator::Uniform(u32 index) {
+    return ir.GetReg(UniformRegister(index));
+}
+
+IR::U1 Translator::UniformPredicate(u32 index) {
+    if (index >= NUM_UNIFORM_PREDICATES) {
+        throw Unsupported{"native uniform predicate index"};
+    }
+    // The stored mask is 0 or all ones, which is how the hardware keeps it in R239.
+    return IR::U1{ir.INotEqual(
+        ir.GetReg(static_cast<IR::Reg>(UNIFORM_PREDICATE_BASE + index)), ir.Imm32(0))};
+}
+
+void Translator::SetUniformPredicate(u32 index, const IR::U1& value) {
+    if (index >= NUM_UNIFORM_PREDICATES) {
+        throw Unsupported{"native uniform predicate index"};
+    }
+    const IR::U32 mask{ir.Select(value, ir.Imm32(0xffffffffU), ir.Imm32(0))};
+    ir.SetReg(static_cast<IR::Reg>(UNIFORM_PREDICATE_BASE + index), mask);
+}
+
+IR::U1 Translator::PredicateOperand(u32 value, bool uniform) {
+    const u32 index = value & 7;
+    const bool negated = (value & 8) != 0;
+    if (index == 7) {
+        return ir.Imm1(!negated);
+    }
+    IR::U1 predicate{[&] {
+        if (!uniform) {
+            return ir.GetPred(static_cast<IR::Pred>(index), negated);
+        }
+        IR::U1 result = UniformPredicate(index);
+        if (negated) {
+            result = IR::U1{ir.LogicalNot(result)};
+        }
+        return result;
+    }()};
+    return predicate;
+}
+
+IR::U1 Translator::Lut3(u32 lut, const IR::U1& a, const IR::U1& b, const IR::U1& c) {
+    // NVIDIA's LUT index is a | b << 1 | c << 2, with operands in assembly order.
+    const auto bit = [&](u32 index) { return ir.Imm1(((lut >> index) & 1) != 0); };
+    const IR::U1 low_a{ir.Select(a, bit(1), bit(0))};
+    const IR::U1 low_b{ir.Select(a, bit(3), bit(2))};
+    const IR::U1 high_a{ir.Select(a, bit(5), bit(4))};
+    const IR::U1 high_b{ir.Select(a, bit(7), bit(6))};
+    const IR::U1 low{ir.Select(b, low_b, low_a)};
+    const IR::U1 high{ir.Select(b, high_b, high_a)};
+    return IR::U1{ir.Select(c, high, low)};
+}
+
 IR::F32 Translator::ReadFloat(u32 which) {
     const auto [source, error] = DecodeSource(current, which);
     if (!error.empty()) {
@@ -63,9 +122,7 @@ IR::F32 Translator::ReadFloat(u32 which) {
             return ir.GetFloatCbuf(ir.Imm32(bank), ir.Imm32(source.offset));
         }
         case SourceKind::Uniform:
-            // Uniform registers become ordinary SSA values in 1.7.3; until then the lowering
-            // handles them.
-            throw Unsupported{"native uniform source"};
+            return IR::F32{ir.BitCast<IR::F32>(Uniform(source.index))};
         }
         throw Unsupported{"native ALU source"};
     }()};
@@ -93,7 +150,7 @@ IR::U32 Translator::ReadUint(u32 which) {
         return ir.GetCbuf(ir.Imm32(bank), ir.Imm32(source.offset));
     }
     case SourceKind::Uniform:
-        throw Unsupported{"native uniform source"};
+        return Uniform(source.index);
     }
     throw Unsupported{"native ALU source"};
 }
@@ -139,6 +196,91 @@ void Translator::WriteUint(const IR::U32& value) {
     }
     const IR::U1 condition = ir.GetPred(static_cast<IR::Pred>(guard.index), guard.negated);
     ir.SetReg(Register(dest), IR::U32{ir.Select(condition, value, Gpr(dest))});
+}
+
+void Translator::EmitMove() {
+    // MOV: register, immediate, uniform register or constant buffer into a general register.
+    const u32 opcode = current.Bits(0, 12);
+    if (current.Bits(72, 4) != 15 ||
+        (current.Bits(76, 16) & (opcode == 0xc02 ? 0U : 0x8000U)) != 0) {
+        throw Unsupported{"native MOV modifiers"};
+    }
+    IR::U32 value{[&]() -> IR::U32 {
+        switch (opcode) {
+        case 0x202:
+            return Gpr(current.Bits(32, 8));
+        case 0x802:
+            return ir.Imm32(current.words[1]);
+        case 0xc02:
+            if (current.words[1] >= NUM_UNIFORM_REGISTERS) {
+                throw Unsupported{"native uniform move source"};
+            }
+            return Uniform(current.words[1]);
+        case 0xa02: {
+            const u32 bank = ConstantBufferBank(current.Bits(54, 5));
+            if (bank >= 18 || (current.Bits(38, 16) % 4) != 0) {
+                throw Unsupported{"native constant buffer address"};
+            }
+            return ir.GetCbuf(ir.Imm32(bank), ir.Imm32(current.Bits(38, 16)));
+        }
+        }
+        throw Unsupported{"native MOV source"};
+    }()};
+    WriteUint(value);
+}
+
+void Translator::EmitUniformMove() {
+    // UMOV: a uniform register from a uniform register or an immediate. These execute uniformly, so
+    // their guard is a uniform predicate.
+    const u32 target = current.Bits(16, 8);
+    if (target >= NUM_UNIFORM_REGISTERS) {
+        throw Unsupported{"native uniform destination register"};
+    }
+    IR::U32 value{[&]() -> IR::U32 {
+        if (current.Bits(0, 12) == 0x882) {
+            if (current.words[2] != 0) {
+                throw Unsupported{"native uniform immediate move mode"};
+            }
+            return ir.Imm32(current.words[1]);
+        }
+        if (current.words[2] != 0x08000000 || current.words[1] >= NUM_UNIFORM_REGISTERS) {
+            throw Unsupported{"native uniform move mode"};
+        }
+        return Uniform(current.words[1]);
+    }()};
+    const u32 guard = current.Bits(12, 4);
+    if ((guard & 7) != 7) {
+        IR::U1 condition = UniformPredicate(guard & 7);
+        if ((guard & 8) != 0) {
+            condition = IR::U1{ir.LogicalNot(condition)};
+        }
+        value = IR::U32{ir.Select(condition, value, Uniform(target))};
+    }
+    ir.SetReg(UniformRegister(target), value);
+}
+
+void Translator::EmitPredicateLut() {
+    // PLOP3.LUT: a three-input predicate lookup table. Bit 67 makes the third source a uniform
+    // predicate, and bits 84-86 name a second destination when they are not PT.
+    const u32 target = current.Bits(81, 3);
+    const u32 second_target = current.Bits(84, 3);
+    const u32 lut = current.Bits(64, 3) | (current.Bits(72, 5) << 3);
+    if (second_target != 7) {
+        throw Unsupported{"native dual predicate LUT mode"};
+    }
+    if (target == 7 || current.Bits(16, 8) != 0 || current.words[1] != 0) {
+        throw Unsupported{"native predicate LUT mode"};
+    }
+    const IR::U1 a = PredicateOperand(current.Bits(87, 4), false);
+    const IR::U1 b = PredicateOperand(current.Bits(77, 4), false);
+    const IR::U1 c = PredicateOperand(current.Bits(68, 4), current.Bits(67, 1) != 0);
+    IR::U1 result = Lut3(lut, a, b, c);
+    const Guard guard = DecodeGuard(current);
+    if (guard) {
+        const IR::U1 condition = ir.GetPred(static_cast<IR::Pred>(guard.index), guard.negated);
+        result = IR::U1{ir.Select(condition, result, ir.GetPred(static_cast<IR::Pred>(target)))};
+    }
+    ir.SetPred(static_cast<IR::Pred>(target), result);
 }
 
 void Translator::EmitFloatAdd() {
@@ -237,6 +379,19 @@ void Translator::Emit() {
     case 0xc21: // FADD  (form 6, uniform second source: rejected in ReadFloat until 1.7.3)
     case 0xe21: // FADD  (form 7, uniform first source: rejected in ReadFloat until 1.7.3)
         EmitFloatAdd();
+        return;
+    case 0x202: // MOV   (register)
+    case 0x802: // MOV   (immediate)
+    case 0xa02: // MOV   (constant buffer)
+    case 0xc02: // MOV   (uniform register)
+        EmitMove();
+        return;
+    case 0x882: // UMOV  (immediate)
+    case 0xc82: // UMOV  (uniform register)
+        EmitUniformMove();
+        return;
+    case 0x81c: // PLOP3.LUT
+        EmitPredicateLut();
         return;
     case 0x223: // FFMA  (form 1)
     case 0x423: // FFMA  (form 2, immediate second source)
