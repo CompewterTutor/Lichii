@@ -19,6 +19,7 @@
 #include "common/common_types.h"
 #include <ranges>
 #include "video_core/control/channel_state_cache.h"
+#include "video_core/debug_shader_inventory.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/shader_environment.h"
@@ -76,6 +77,10 @@ public:
 
     /// @brief Flushes delayed removal operations
     void SyncGuestHost();
+
+    /// Every program this cache knows: address, unique hash, size, and the rejection for the ones
+    /// the lowering refused. Read-only; the debug server calls it between frames.
+    [[nodiscard]] VideoCore::DebugShaderInventory DebugShaderInventory() const;
 
     /// Drops the native programs the debug server rejects so their next draw or dispatch lowers
     /// them again (and fails); after an un-reject, forgets every rejection so they are retried.
@@ -177,7 +182,7 @@ private:
 
     /// Native programs the lowering rejected, by address, so each draw or dispatch rethrows the
     /// first error instead of lowering again; dropped when guest memory there is written.
-    std::mutex rejected_mutex;
+    mutable std::mutex rejected_mutex;
     ::Common::unordered_map<u64, std::exception_ptr> rejected_native;
     /// Bounds of every address ever rejected (never shrinks): a quick test for invalidations.
     std::atomic<VAddr> rejected_lowest{~VAddr{}};

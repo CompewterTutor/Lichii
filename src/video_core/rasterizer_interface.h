@@ -15,6 +15,7 @@
 #include "common/polyfill_thread.h"
 #include "common/settings.h"
 #include "video_core/cache_types.h"
+#include "video_core/debug_shader_inventory.h"
 #include "video_core/engines/fermi_2d.h"
 #include "video_core/game_dlss_status.h"
 #include "video_core/gpu.h"
@@ -59,6 +60,11 @@ public:
     };
 
     [[nodiscard]] virtual std::optional<DebugCacheStats> GetDebugCacheStats() {
+        return std::nullopt;
+    }
+
+    /// Every program the shader cache knows, for the debug server's inventory tool.
+    [[nodiscard]] virtual std::optional<VideoCore::DebugShaderInventory> GetDebugShaders() {
         return std::nullopt;
     }
 

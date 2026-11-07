@@ -746,6 +746,38 @@ json RejectShaders(ToolState&, const json& params) {
     return result;
 }
 
+json Shaders(ToolState& state, const json& params) {
+    auto* rasterizer = state.system.GPU().Renderer().ReadRasterizer();
+    if (rasterizer == nullptr) {
+        throw std::runtime_error{"no rasterizer is active"};
+    }
+    const auto inventory = rasterizer->GetDebugShaders();
+    if (!inventory) {
+        throw std::runtime_error{"this renderer has no shader inventory"};
+    }
+    const size_t limit = Param<size_t>(params, "limit", 256, 1, 100000);
+    json list = json::array();
+    size_t rejected{};
+    for (const VideoCore::DebugShader& shader : *inventory) {
+        if (shader.rejected) {
+            ++rejected;
+        }
+        if (list.size() >= limit) {
+            continue;
+        }
+        json entry = {{"address", fmt::format("{:#x}", shader.address)},
+                      {"hash", Hex(shader.unique_hash)},
+                      {"size", shader.size_bytes},
+                      {"rejected", shader.rejected}};
+        if (shader.rejected) {
+            entry["error"] = shader.error;
+        }
+        list.push_back(std::move(entry));
+    }
+    return {{"programs", inventory->size()}, {"rejected", rejected}, {"listed", list.size()},
+            {"shaders", std::move(list)}};
+}
+
 json ReadGuestMemory(ToolState& state, const json& params) {
     const u64 address = Param<u64>(params, "address", 0, 0, 0x7fff'ffff'ffff);
     const int size = Param<int>(params, "size", 256, 1, 1 << 20);
@@ -996,6 +1028,7 @@ Handlers MakeHandlers(const std::shared_ptr<ToolState>& state) {
         {"capture_frame", handler(CaptureFrame)},
         {"reject_shaders", handler(RejectShaders)},
         {"scan_shaders", handler(ScanShaders)},
+        {"shaders", handler(Shaders)},
         {"read_guest_memory", handler(ReadGuestMemory)},
         {"write_guest_memory", handler(WriteGuestMemory)},
         {"input", handler(Input)},

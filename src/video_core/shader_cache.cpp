@@ -468,6 +468,41 @@ ShaderCache::Entry* ShaderCache::NewEntry(VAddr addr, VAddr addr_end, ShaderInfo
     return entry_pointer;
 }
 
+VideoCore::DebugShaderInventory ShaderCache::DebugShaderInventory() const {
+    VideoCore::DebugShaderInventory inventory;
+    {
+        std::scoped_lock lock{lookup_mutex};
+        inventory.reserve(lookup_cache.size());
+        for (const auto& [addr, entry] : lookup_cache) {
+            if (!entry || !entry->data) {
+                continue;
+            }
+            inventory.push_back({.address = entry->addr_start,
+                                 .unique_hash = entry->data->unique_hash,
+                                 .size_bytes = entry->data->size_bytes});
+        }
+    }
+    {
+        std::scoped_lock lock{rejected_mutex};
+        for (auto& shader : inventory) {
+            const auto it = rejected_native.find(shader.address);
+            if (it == rejected_native.end() || !it->second) {
+                continue;
+            }
+            shader.rejected = true;
+            try {
+                std::rethrow_exception(it->second);
+            } catch (const std::exception& error) {
+                shader.error = error.what();
+            } catch (...) {
+                shader.error = "unknown rejection";
+            }
+        }
+    }
+    std::ranges::sort(inventory, {}, &VideoCore::DebugShader::address);
+    return inventory;
+}
+
 const ShaderInfo* ShaderCache::MakeShaderInfo(GenericEnvironment& env, VAddr cpu_addr) {
     auto info = std::make_unique<ShaderInfo>();
     if (const std::optional<u64> cached_hash{env.Analyze()}) {

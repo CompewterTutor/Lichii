@@ -245,6 +245,16 @@ TOOLS = [
         },
     },
     {
+        "name": "shaders",
+        "description": "Every program the shader cache knows: guest address, unique hash, size "
+                       "and, for the ones lowering refused, the error. Counts cover the whole "
+                       "inventory; 'limit' caps the listed entries.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 100000}},
+        },
+    },
+    {
         "name": "read_guest_memory",
         "description": "Reads application memory (CPU virtual addresses) and returns the bytes "
                        "as base64. Fails on a range that is not fully mapped instead of returning "
