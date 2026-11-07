@@ -101,6 +101,27 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
         operand(16);
         operand(24);
         break;
+    case 0x806: // VOTE writes the ballot into a guest register and reads none.
+        operand(16);
+        break;
+    case 0x989: // SHFL reads the value at bits 24-31 and writes a destination.
+        operand(16);
+        operand(24);
+        break;
+    case 0x832:
+    case 0xa32: // HMUL2 immediate and cbuf sources, as the register form 0x232.
+        operand(16);
+        operand(24);
+        break;
+    case 0x213:
+    case 0xa13: // IABS: the source is bits 32-39 or 64-71 depending on the form.
+        operand(16);
+        operand(32);
+        operand(64);
+        break;
+    case 0xc13: // IABS with a uniform source.
+        operand(16);
+        break;
     case 0x822: // FSWZADD: two guest sources and a destination.
         operand(16);
         operand(24);
