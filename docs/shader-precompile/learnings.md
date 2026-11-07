@@ -558,3 +558,20 @@ Numbers here come from two OoT sessions on the local machine (build `nx2-99ac3d5
   case the lowering already has, add the one field the sibling does not cover, and re-run the
   captured programs. Each of the four "unsupported native opcode" groups has such a sibling except
   `0x3a9` (global CAS).
+
+## 2026-11-07 - Native frontend scaffold, and the first coverage number
+
+- Added `frontend/native/` with a coverage query (`IsImplemented`, `ImplementedCount`, `Missing`) and
+  `shader-sweep --native`, which reports per program the opcodes with no direct IR translation yet.
+  The scaffold deliberately implements only NOP and EXIT until an arithmetic family lands, so the
+  number stays honest.
+- First measurement, one captured OoT compute program (1920 instructions): 100 distinct opcodes and
+  1907 instructions unimplemented. The top four are FFMA `0x223` (157), FADD `0x221` (155), FMUL
+  `0x220` (143) and `0xf89` (124): 579 instructions, 30% of the program, from four opcodes.
+- Learning: a native frontend is a large but measurable port, and the corpus makes it a scoreboard
+  rather than a leap. Four arithmetic opcodes are worth 30% of a program; the long tail is the
+  remaining 96 opcodes at a handful of uses each.
+- Learning: `0x000` and `0x00c` appear as opcodes in the raw allocation (23 and 1 instructions in
+  that program). They are padding past the program's end, so the native frontend must ignore zero
+  words rather than treat them as unimplemented opcodes, otherwise coverage looks worse than it is.
+- Applies to: phase 1.7. The lowering stays the default and the oracle until 1.7.6.

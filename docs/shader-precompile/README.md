@@ -36,6 +36,26 @@ Static pre-lowering is not the delivery mechanism: lowering specialises on runti
 and storage pointer types, so a key list of built pipelines, not a precompiled shader archive, is
 what gets shipped.
 
+## Native frontend (phase 1.7)
+
+Instead of rewriting each native NVN2 instruction into Maxwell encoding and letting the Maxwell
+frontend translate it, a native frontend decodes the instruction and emits IR directly. That removes
+the three failure classes the lowering keeps producing: the high-register shadow pass (two register
+files competing for 255 slots), the per-form mode-word matching, and the encoding-expressibility
+proofs (gather offsets, 64-bit carries). IR has no uniform register file, so UR0-UR63 become ordinary
+SSA values rather than an R216-R245 remap.
+
+It starts as a measurement, not a replacement: the lowering stays the default and the oracle.
+
+```sh
+build-sweep/bin/shader-sweep <program.bin> --stage compute --format instructions --native
+# {"phase":"native","implemented_opcodes":2,"unimplemented_instructions":1907,
+#  "unimplemented":[{"count":157,"opcode":"0x223"}, ...],"status":"blocked"}
+```
+
+A program with an empty `unimplemented` list is fully covered. Opcodes are added one family at a
+time, each with a captured instruction and its nvdisasm decode.
+
 ## Diagnostic switches
 
 All are env flags, off by default unless noted, and none of them merge to `nx2` as a behaviour
@@ -61,6 +81,8 @@ switch: a proven effect ships unconditional.
   still missing, which rejects a program whenever a high guest register forces a shadow copy).
   `tools/nx2/lower_operand_audit.py` prints the gap.
 - 1.4.2 finish the merge workflow.
+- 1.7 the native frontend: scaffold and coverage scoreboard are in place, the arithmetic families,
+  uniform registers as SSA, gathers, atomics and the parity gate follow (1.7.2 to 1.7.6).
 - 1.5.1 measure end-to-end on OoT and one state-heavy title; 1.5.2 remove the experiment switches
   and document the shipped behaviour.
 

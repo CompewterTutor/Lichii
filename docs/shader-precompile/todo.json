@@ -677,6 +677,153 @@
           "changelog": "screenshot save/inline verified live, and the reject A/B verified live: the response reported the override, the image differed from the plain capture, and status showed no leftover rejection. Render overrides (skipping a pass) are still open."
         }
       ]
+    },
+    {
+      "id": "1.7",
+      "title": "Native frontend: NVN2 instructions straight to IR",
+      "goal": "Decode the native NVN2 instruction stream into IR without rewriting it into Maxwell encoding first. This removes the three failure classes the lowering keeps producing: the high-register shadow pass (two register files fighting over 255 slots), the per-form mode-word matching (register, immediate, cbuf and uniform layouts differ), and the encoding-expressibility proofs (gather offsets, 64-bit carries). IR has no uniform register file, so UR0-UR63 become ordinary SSA values instead of the R216-R245 remap.",
+      "prerequisites": [
+        "1.3.3"
+      ],
+      "tasks": [
+        {
+          "id": "1.7.1",
+          "title": "Native frontend scaffold and coverage scoreboard",
+          "status": "done",
+          "goal": "A frontend/native module that answers which opcodes it can translate, and a shader-sweep --native mode that reports, per program, the opcodes still missing. This makes the port measurable before any IR is emitted.",
+          "touches": [
+            "src/shader_recompiler/frontend/native/translate_program.h",
+            "src/shader_recompiler/frontend/native/translate_program.cpp",
+            "tools/shader-sweep/main.cpp"
+          ],
+          "success": [
+            "IsImplemented, ImplementedCount and Missing describe the coverage",
+            "shader-sweep --native reports unimplemented opcodes per program"
+          ],
+          "tests": "Unit test for the coverage query; run --native over one captured OoT program.",
+          "complexity": "Low",
+          "agent": "mid_dev_agent",
+          "created_at": "2026-11-07T16:10:04Z",
+          "updated_at": "2026-11-07T16:10:04Z",
+          "changelog": "Scaffold landed with NOP and EXIT only, kept deliberately honest until an arithmetic family arrives. First measurement on a captured OoT compute program: 100 distinct opcodes, 1907 instructions to cover; the top four (FFMA 0x223, FADD 0x221, FMUL 0x220, 0xf89) carry 579 of them."
+        },
+        {
+          "id": "1.7.2",
+          "title": "Direct IR for the arithmetic families",
+          "status": "pending",
+          "goal": "Emit IR for FADD, FMUL, FFMA, IADD3/IMNMX and the shifts/sel families, which cover most instructions in a program. Decode the native operand forms (register, immediate, cbuf, uniform) from the instruction bits rather than through a rewritten encoding.",
+          "touches": [
+            "src/shader_recompiler/frontend/native/",
+            "src/shader_recompiler/frontend/ir/"
+          ],
+          "success": [
+            "The arithmetic families translate to IR with a captured instruction test each",
+            "shader-sweep --native coverage over the corpus rises accordingly"
+          ],
+          "tests": "Per-opcode tests with captured words plus nvdisasm cross-checks; sweep the corpus.",
+          "prerequisites": [
+            "1.7.1"
+          ],
+          "complexity": "High",
+          "agent": "pro_dev_agent",
+          "created_at": "2026-11-07T16:10:04Z",
+          "updated_at": "2026-11-07T16:10:04Z",
+          "changelog": ""
+        },
+        {
+          "id": "1.7.3",
+          "title": "Uniform registers and predicates as SSA values",
+          "status": "pending",
+          "goal": "Model UR0-UR63 and UP0-UP6 as SSA values in the native frontend. This is what makes the register-pressure pass and its 118-opcode operand table unnecessary: there is no second register file competing with the 255-slot file.",
+          "touches": [
+            "src/shader_recompiler/frontend/native/",
+            "src/shader_recompiler/frontend/ir/"
+          ],
+          "success": [
+            "A captured program using UR28+ lowers without any shadow copies",
+            "No reserved base, no R216-R245 remap in the native path"
+          ],
+          "tests": "Re-run the OoT programs that fail with native register shadowing mode.",
+          "prerequisites": [
+            "1.7.2"
+          ],
+          "complexity": "High",
+          "created_at": "2026-11-07T16:10:04Z",
+          "updated_at": "2026-11-07T16:10:04Z",
+          "changelog": ""
+        },
+        {
+          "id": "1.7.4",
+          "title": "Gather and texture fetch straight to IR",
+          "status": "pending",
+          "goal": "Translate TLD4 gathers and TEX fetches directly, with per-tap offsets as ordinary IR values. The lowering needs a constant-offset proof against Maxwell TLD4 AOFFI; IR takes the offsets as a value, so the 20 OoT programs blocked on the proof are the first target.",
+          "touches": [
+            "src/shader_recompiler/frontend/native/",
+            "src/shader_recompiler/frontend/ir/"
+          ],
+          "success": [
+            "A per-tap gather translates without a constant-offset proof",
+            "The 20 OoT gather programs lower and render"
+          ],
+          "tests": "Annotated gather program from the OoT dump; live A/B on the same save.",
+          "prerequisites": [
+            "1.7.3"
+          ],
+          "complexity": "Very High",
+          "created_at": "2026-11-07T16:10:04Z",
+          "updated_at": "2026-11-07T16:10:04Z",
+          "changelog": ""
+        },
+        {
+          "id": "1.7.5",
+          "title": "Atomics, 64-bit addresses and uniform LEA carry",
+          "status": "pending",
+          "goal": "Direct IR for the global atomics (0x3a8, 0x3a9 CAS) and the 64-bit address arithmetic including ULEA with a uniform-predicate carry, which the lowering refuses because it would have to write R239.",
+          "touches": [
+            "src/shader_recompiler/frontend/native/",
+            "src/shader_recompiler/frontend/ir/"
+          ],
+          "success": [
+            "ATOMG.E.CAS and the uniform LEA carry translate",
+            "The 10 OoT programs failing on native LEA carry/high mode lower"
+          ],
+          "tests": "Captured instructions plus the 10 OoT programs from the sweep.",
+          "prerequisites": [
+            "1.7.3"
+          ],
+          "complexity": "High",
+          "created_at": "2026-11-07T16:10:04Z",
+          "updated_at": "2026-11-07T16:10:04Z",
+          "changelog": ""
+        },
+        {
+          "id": "1.7.6",
+          "title": "Parity gate, then make the native frontend the default",
+          "status": "pending",
+          "goal": "Prove the native frontend against the lowering: same SPIR-V where the lowering already works, spirv-val clean where it does not. Then switch the default and delete lower_to_maxwell.h and register_pressure.h.",
+          "touches": [
+            "src/shader_recompiler/frontend/native/",
+            "src/shader_recompiler/frontend/ampere/",
+            "src/video_core/shader_environment.cpp"
+          ],
+          "success": [
+            "Corpus parity: no program the lowering handles produces different SPIR-V",
+            "A full OoT session plus the other titles' dumps render identically",
+            "The lowering table and the pressure pass are gone"
+          ],
+          "tests": "Sweep the corpus with both frontends and diff; play OoT end to end.",
+          "prerequisites": [
+            "1.7.2",
+            "1.7.3",
+            "1.7.4",
+            "1.7.5"
+          ],
+          "complexity": "Very High",
+          "created_at": "2026-11-07T16:10:04Z",
+          "updated_at": "2026-11-07T16:10:04Z",
+          "changelog": ""
+        }
+      ]
     }
   ]
 }

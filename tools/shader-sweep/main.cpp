@@ -20,6 +20,8 @@
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/environment.h"
 #include "shader_recompiler/frontend/ampere/lower_to_maxwell.h"
+
+#include "shader_recompiler/frontend/native/translate_program.h"
 #include "shader_recompiler/frontend/ampere/program_address_map.h"
 #include "shader_recompiler/frontend/ampere/program_capture.h"
 #include "shader_recompiler/frontend/ampere/trap_guards.h"
@@ -525,6 +527,7 @@ int main(int argc, char** argv) {
         u32 version{};
         bool lower_only{};
         bool capture_extent{};
+        bool native_report{};
         for (int i = 1; i < argc; ++i) {
             const std::string arg{argv[i]};
             if (arg == "--help") {
@@ -533,7 +536,8 @@ int main(int argc, char** argv) {
                              "  [--format instructions|native-header] [--environment FILE "
                              "--cache-version 46|47|48|49|50]\n"
                              "  [--pipeline-key FILE] [--capture-extent] "
-                             "(--output SPV | --lower-only WORDS)\n";
+                             "(--output SPV | --lower-only WORDS | --native)\n"
+                             "  --native reports the opcodes the native frontend lacks\n";
                 return 0;
             }
             if (!arg.starts_with("--")) {
@@ -544,6 +548,10 @@ int main(int argc, char** argv) {
             }
             if (arg == "--capture-extent") {
                 capture_extent = true;
+                continue;
+            }
+            if (arg == "--native") {
+                native_report = true;
                 continue;
             }
             if (++i == argc)
@@ -569,7 +577,8 @@ int main(int argc, char** argv) {
             } else
                 throw std::runtime_error("Unknown option " + arg);
         }
-        if (output.empty() || (input.empty() && environment.empty()) ||
+        if ((output.empty() && !native_report) || (native_report && input.empty()) ||
+            (native_report && !output.empty()) || (input.empty() && environment.empty()) ||
             (environment.empty() != (version == 0)) || (lower_only && input.empty()) ||
             (capture_extent && input.empty())) {
             throw std::runtime_error("Invalid arguments; see --help");
@@ -643,6 +652,23 @@ int main(int argc, char** argv) {
                     throw MissingContext("Native allocation lacks a complete runtime capture");
                 }
                 diagnostic["source_bytes"] = native.size() * sizeof(Instruction);
+            }
+            if (native_report) {
+                diagnostic["phase"] = "native";
+                const auto missing = Shader::Native::Missing(native);
+                Json list = Json::array();
+                std::size_t absent{};
+                for (const auto& entry : missing) {
+                    list.push_back({{"opcode", fmt::format("{:#05x}", entry.opcode)},
+                                    {"count", entry.count}});
+                    absent += entry.count;
+                }
+                diagnostic["implemented_opcodes"] = Shader::Native::ImplementedCount();
+                diagnostic["unimplemented_instructions"] = absent;
+                diagnostic["unimplemented"] = std::move(list);
+                diagnostic["status"] = missing.empty() ? "ok" : "blocked";
+                std::cout << diagnostic.dump() << '\n';
+                return missing.empty() ? 0 : 1;
             }
             diagnostic["phase"] = "lower";
             std::vector<u32> traps;
