@@ -32,6 +32,18 @@ TEST_CASE("Native frontend reports the opcodes it cannot translate", "[video_cor
     CHECK(missing[1].count == 1);
 }
 
+TEST_CASE("Zero padding is not an unimplemented opcode", "[video_core][native]") {
+    // A raw allocation carries the program followed by zero words; they must not read as opcode 0.
+    const std::array code{WithOpcode(0x94d), WithOpcode(0x000), WithOpcode(0x000)};
+    CHECK(Shader::Native::Missing(code).empty());
+
+    // A zero opcode word with other bits set is not padding, so it is still reported.
+    const std::array odd{Instruction{{0x00000000, 0x00000008, 0, 0}}, WithOpcode(0x000)};
+    const auto missing = Shader::Native::Missing(odd);
+    REQUIRE(missing.size() == 1);
+    CHECK(missing[0].opcode == 0x0);
+}
+
 TEST_CASE("A program of implemented opcodes is covered", "[video_core][native]") {
     const std::array code{WithOpcode(0x918), WithOpcode(0x94d)};
     CHECK(Shader::Native::Missing(code).empty());

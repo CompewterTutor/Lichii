@@ -34,6 +34,11 @@ std::vector<MissingOpcode> Missing(std::span<const Ampere::Instruction> code) {
     std::map<u32, std::size_t> counts;
     for (const Ampere::Instruction& instruction : code) {
         const u32 opcode = instruction.Bits(0, 12);
+        // Zero words are padding after a program's end in a raw allocation, not instructions.
+        if (opcode == 0 && instruction.words[1] == 0 && instruction.words[2] == 0 &&
+            instruction.words[3] == 0) {
+            continue;
+        }
         if (!IsImplemented(opcode)) {
             ++counts[opcode];
         }
