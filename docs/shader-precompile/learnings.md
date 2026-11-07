@@ -519,3 +519,24 @@ Numbers here come from two OoT sessions on the local machine (build `nx2-99ac3d5
   deliberate "unsupported" into a wrong lower, which is exactly why the existing tests assert the
   rejection. Check what else guards an opcode before listing it.
 - Applies to: 1.3.4. The gather group stays out of the table until shadowed gathers are proven.
+
+## 2026-11-07 - The undecoded opcodes, decoded with nvdisasm on this machine
+
+- The CUDA toolkit here has `nvdisasm` (12.4 through 13.3), and `nvdisasm -b SM90 file.bin` decodes
+  a raw instruction binary, so no shipping of game data or CUDA project is needed: write the four
+  little-endian words of one instruction to a file and disassemble it. A word nvdisasm refuses stops
+  the run, so try one instruction per file and several architectures.
+- Decoded, with the captured words after the opcode:
+
+  | Opcode | Words | Disassembly (SM90) | Lowering gap |
+  |---|---|---|---|
+  | `0x291` | `060a7291 0000000a 0f84103f 000fe200` | `ULEA UR10, UP2, UR6, UR10, 0x2` | bits 81-83 name the *uniform predicate that receives the carry out* (UP2), not a plain flag. The rewrite path rejects a uniform LEA with a carry out because it would have to write R239 bit 6-2. |
+  | `0x905` | `00017905 7fffffff 0021f000 000e2200` | `F2I.FTZ.U32.TRUNC.NTZ R1, +QNAN` | Float-to-unsigned-int with an *immediate* source; only the register form (`0x311`, U64) exists. |
+  | `0xc08` | `01017c08 00000004 08800000 000fe400` | `FSEL R1, R1, UR4, P1` | Float select with a uniform second operand. |
+  | `0x3a9` | `000073a9 00000008 001ee109 000ea400` | `ATOMG.E.CAS.STRONG.GPU PT, R0, [R0], R8, R9` | Global compare-and-swap; only `0x3a8` (atomic add/min/max and strong GPU U32) is lowered. |
+  | `0x481` | `020c0481 00000000 00000000 00000000` | none on SM87/90/100/101/103/120/121: "Unrecognized operation for functional unit 'uC'" | Either an NVN2 encoding this toolkit does not know, or the sweep picked up data rather than an instruction. Check the containing program before treating it as a missing opcode. |
+
+- Learning: the decode wall is gone, and it settles questions the byte patterns could not. For
+  `0x291` the field is a predicate destination, which explains why the existing guard refuses it: a
+  rewrite has to materialise the carry into R239 with the same machinery `ULOP3` uses.
+- Applies to: 1.3.3's four "unsupported native opcode" groups, and the LEA carry group.
