@@ -28,7 +28,9 @@ those pipelines. Lists carry identifiers only: no shader code, SPIR-V, environme
   and NDVE); an offline sweep lowers 38,801 of them, 1,776 compile and pass `spirv-val`, 68 refuse
   to lower, and 521 need runtime context. `.bphsh`/`.bphsc`/`.bphnm` are Havok physics, not
   shaders.
-- **List tooling.** `tools/nx2/keylist_tool.py` inspects, merges and diffs lists (12 tests).
+- **List tooling.** `tools/nx2/keylist_tool.py` inspects, merges and diffs lists (12 tests), and
+  `tools/nx2/lower_operand_audit.py` reports the opcodes the lowering handles but the
+  register-pressure pass cannot yet shadow.
 
 Static pre-lowering is not the delivery mechanism: lowering specialises on runtime uniform values
 and storage pointer types, so a key list of built pipelines, not a precompiled shader archive, is
@@ -50,10 +52,15 @@ switch: a proven effect ships unconditional.
 
 ## Open work
 
-- 1.3.2 load title shader programs at boot for key-list builds; 1.3.3 close the 13 lowering gaps the
-  OoT sweep found.
-- 1.4.2 finish the merge workflow; 1.4.1 split rows loaded from a list out of rows this run
-  recorded.
+- 1.3.2 load title shader programs at boot for key-list builds.
+- 1.3.3 close the lowering gaps the OoT sweep found: 6 of the 68 programs that refused to lower now
+  lower completely. The remaining groups are the multi-tap gather proofs, the uniform LEA carry,
+  call linkage and a handful of opcodes that need a decode first. Findings and the exact instruction
+  for each group are in [`learnings.md`](./learnings.md).
+- 1.3.4 describe every opcode the lowering handles in the register-pressure pass (130 of 234 are
+  still missing, which rejects a program whenever a high guest register forces a shadow copy).
+  `tools/nx2/lower_operand_audit.py` prints the gap.
+- 1.4.2 finish the merge workflow.
 - 1.5.1 measure end-to-end on OoT and one state-heavy title; 1.5.2 remove the experiment switches
   and document the shipped behaviour.
 

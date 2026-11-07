@@ -479,3 +479,24 @@ Numbers here come from two OoT sessions on the local machine (build `nx2-99ac3d5
   helper resolve it through that helper's `form = Bits(9, 3)` mapping (which=0 is bits 24; 1 and 2
   are bits 32 or 64 depending on the form). Validate a batch with the sweep over the known-failing
   OoT programs and the whole `[video_core]` suite, which is what catches a wrong list.
+
+## 2026-11-07 - Which pressure entries are worth adding, and which cannot matter
+
+- Two batches filled ten opcodes (FADD/FMNMX immediate, cbuf and uniform forms, F2F.F16.F32,
+  IDP.2A.LO, ULDC direct and indexed), taking the audit from 140 to 130. Neither batch moved an OoT
+  program: none of the 68 reach the shadow stage on those instructions. The entries remove latent
+  rejections, not current ones.
+- Rule that saves work: an opcode whose operand fields hold uniform-register indices or predicate
+  slots can never need a shadow, because those values are below 64 and the reserved base starts at
+  216. `0x882`, `0x883`, `0x886`, `0x88c`, `0x28c`, `0x89c`, `0x81c`, `0xc82` and `0x2a5` are all in
+  that group, so leaving them out of the pressure switch changes nothing.
+- Rule that makes a sibling cheap: when a family branch differs only in where source B comes from
+  (register, immediate, cbuf, uniform), it can reuse the register form's list, because the
+  non-register forms keep a value below the reserved base in that field and the pass only rewrites
+  fields that land in a mapped high quartet.
+- Limit found: multi-tap gather (`0xb63`/`0xf63`) cannot take a flat list. Its destination span is
+  `popcount(mask)` and may split across bits 16 and 64, source A spans by dimension, and source B
+  spans 2 registers for packed per-tap offsets. Under-listing corrupts silently; over-listing just
+  rejects again. It needs the lowering's own expressions mirrored into the pass, so it is the next
+  real unit of work rather than a batch edit.
+- Applies to: 1.3.4. `tools/nx2/lower_operand_audit.py` is the scoreboard.
