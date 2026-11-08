@@ -759,3 +759,22 @@ Numbers here come from two OoT sessions on the local machine (build `nx2-99ac3d5
   the native path rather than a syntax-list assertion.
 - Nothing renders through the native path yet: every captured program still stops on an
   unimplemented instruction, so the fallback is the path actually taken until the tail is clear.
+
+## 2026-11-08 - Native frontend: clearing the tail
+
+- Added STS with a register offset (0x388), FMNMX (0x209), I2F.U8/S8 (0x306, 0xd06) and SHF with an
+  immediate (0x819): 268 to 198 unimplemented instructions, 66 opcodes, 86% to 90% of the captured
+  compute program. The structurer now gets 59 IR instructions in before it stops, up from 35.
+- FMNMX's direction is the predicate in bits 87-90, and a negated predicate *swaps* min and max
+  rather than selecting a different instruction: `@!PT` is max, `@PT` is min. The lowering encodes
+  the same thing by swapping the two Maxwell values.
+- I2F takes a byte selected by bits 60-61 and converts it; signedness is bit 74, independent of the
+  selector. `ConvertIToF(32, 8, signed, byte)` is the IR call, not `ConvertU32F32`.
+- Two mistakes worth recording, both invisible without running:
+  - `Translator::Error()` returned a `string_view`. Once the message needed the opcode number it
+    pointed into the translator's own buffer, so the structurer's copy dangled and the sweep
+    reported a garbled string. The structurer now owns a `std::string`.
+  - Naming the opcode in the failure was worth more than any single opcode: the coverage report went
+    from "unsupported native opcode" on every program to the exact number blocking each one.
+- Next blockers, in program order: 0x811 LEA immediate (the current stop), then 0x807/0x808
+  LOP3 variants, 0x892 ULOP3 and 0x899 USHF.

@@ -307,7 +307,7 @@ TEST_CASE("Opcode gaps fail instead of guessing", "[video_core][native]") {
     Translated program;
     // ATOM GLOBAL CAS has no IR translation yet.
     CHECK_FALSE(program.translator.Translate(Instruction{{0x000093a9, 0, 0, 0}}));
-    CHECK(program.translator.Error() == "unsupported native opcode");
+    CHECK(program.translator.Error().starts_with("unsupported native opcode"));
 }
 
 TEST_CASE("Uniform registers are their own SSA values", "[video_core][native]") {

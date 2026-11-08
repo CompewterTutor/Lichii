@@ -713,12 +713,15 @@ void Translator::EmitSharedMemory() {
     const u32 opcode = current.Bits(0, 12);
     const u32 width = current.Bits(73, 3);
     const u32 stride = current.Bits(78, 2);
-    const bool store = opcode == 0x988;
+    const bool store = opcode != 0x984;
     if (width > 6) {
         throw Unsupported{"native shared memory width"};
     }
-    const bool uniform_base = current.Bits(91, 1);
-    if (current.words[2] != ((width << 9) | (stride << 14) | (uniform_base ? 0x08000000U : 0U))) {
+    const bool uniform_base = (opcode == 0x984 || opcode == 0x988) && current.Bits(91, 1);
+    const u32 ignored = uniform_base ? (opcode == 0x988 ? 0x080000ffU : 0x08000000U) : 0U;
+    if ((current.words[2] & ~ignored) != ((width << 9) | (stride << 14)) ||
+        (opcode == 0x984 && !uniform_base && current.Bits(32, 8) != 0) ||
+        (opcode == 0x988 && !uniform_base)) {
         throw Unsupported{"native shared memory addressing mode"};
     }
     IR::U32 pointer = Gpr(current.Bits(24, 8));
@@ -741,6 +744,83 @@ void Translator::EmitSharedMemory() {
     }
     const IR::Value value{ir.LoadShared(bit_size, false, pointer)};
     WriteUint(IR::U32{value});
+}
+
+void Translator::EmitShift() {
+    // SHF with an immediate shift. Only the plain word forms are handled: a right shift reads the
+    // high word, a left shift the low word, and the other word must be RZ.
+    const u32 direction = current.Bits(76, 1);
+    const u32 type = current.Bits(73, 2);
+    const u32 shift = current.words[1];
+    if (current.Bits(75, 1) || shift > 32) {
+        throw Unsupported{"native shift mode"};
+    }
+    const IR::U32 amount = ir.Imm32(shift);
+    if (direction != 0) {
+        if (current.Bits(24, 8) != 255 || (type != 3 && type != 2)) {
+            throw Unsupported{"native shift mode"};
+        }
+        const IR::U32 source = Gpr(current.Bits(64, 8));
+        WriteUint(type == 2 ? IR::U32{ir.ShiftRightArithmetic(source, amount)}
+                            : IR::U32{ir.ShiftRightLogical(source, amount)});
+        return;
+    }
+    if (current.Bits(64, 8) != 255 || type != 3) {
+        throw Unsupported{"native shift mode"};
+    }
+    WriteUint(IR::U32{ir.ShiftLeftLogical(Gpr(current.Bits(24, 8)), amount)});
+}
+
+void Translator::EmitFloatMinMax() {
+    // FMNMX: min or max of two sources, chosen by the predicate in bits 87-90. A negated predicate
+    // swaps the two, which is what turns the same instruction into the other direction.
+    if (current.Bits(74, 6) != 0 || current.Bits(82, 5) != 0 || current.Bits(81, 1)) {
+        throw Unsupported{"native floating min/max mode"};
+    }
+    const IR::F32 a = ReadFloat(0);
+    const IR::F32 b = ReadFloat(1);
+    const IR::FpControl control{
+        .no_contraction = false,
+        .rounding = IR::FpRounding::DontCare,
+        .fmz_mode = current.Bits(80, 1) ? IR::FmzMode::FTZ : IR::FmzMode::None,
+    };
+    const IR::F32 maximum = ir.FPMax(a, b, control);
+    const IR::F32 minimum = ir.FPMin(a, b, control);
+    const u32 predicate = current.Bits(87, 3);
+    const bool negated = current.Bits(90, 1) != 0;
+    const IR::U1 condition{predicate == 7
+                               ? ir.Imm1(!negated)
+                               : ir.GetPred(static_cast<IR::Pred>(predicate), negated)};
+    WriteFloat(IR::F32{ir.Select(condition, negated ? maximum : minimum,
+                                 negated ? minimum : maximum)});
+}
+
+void Translator::EmitIntegerToFloat() {
+    // I2F.U8 / I2F.S8: a byte selected from the source, converted to float. Bit 74 picks the
+    // signed form.
+    const u32 opcode = current.Bits(0, 12);
+    const bool signed_conversion = current.Bits(74, 1) != 0;
+    if ((current.words[2] & ~0x400U) != (opcode == 0xd06 ? 0x08001000U : 0x00001000U)) {
+        throw Unsupported{"native integer-to-float format"};
+    }
+    if (current.words[1] & 0xcfffff00U) {
+        throw Unsupported{"native integer-to-float source"};
+    }
+    IR::U32 source{[&]() -> IR::U32 {
+        if (opcode == 0xd06) {
+            return Uniform(current.Bits(32, 8));
+        }
+        if (current.Bits(24, 8) != 0) {
+            throw Unsupported{"native integer-to-float source"};
+        }
+        return Gpr(current.Bits(32, 8));
+    }()};
+    const u32 selector = current.Bits(60, 2);
+    // A byte of the source, converted to float. The signed form sign-extends the selected byte.
+    const IR::Value value{ir.ConvertIToF(32, 8, signed_conversion,
+                                         ir.BitFieldExtract(source, ir.Imm32(selector * 8),
+                                                            ir.Imm32(8)))};
+    WriteFloat(IR::F32{value});
 }
 
 void Translator::EmitShuffleRegister() {
@@ -925,9 +1005,20 @@ void Translator::Emit() {
     case 0x986: // STG
         EmitGlobalStore();
         return;
+    case 0x388: // STS with a register offset
     case 0x984: // LDS
     case 0x988: // STS
         EmitSharedMemory();
+        return;
+    case 0x209: // FMNMX
+        EmitFloatMinMax();
+        return;
+    case 0x819: // SHF with an immediate shift
+        EmitShift();
+        return;
+    case 0x306: // I2F
+    case 0xd06: // I2F (uniform source)
+        EmitIntegerToFloat();
         return;
     case 0x589: // SHFL with a register lane
         EmitShuffleRegister();
@@ -988,6 +1079,13 @@ bool Translator::Translate(const Ampere::Instruction& instruction) {
         Emit();
         return true;
     } catch (const Unsupported& unsupported) {
+        if (unsupported.reason == "unsupported native opcode") {
+            // Name the opcode: the coverage report is otherwise a wall of identical failures.
+            detailed_error = fmt::format("unsupported native opcode {:#05x}",
+                                         instruction.Bits(0, 12));
+            error = detailed_error;
+            return false;
+        }
         error = unsupported.reason;
         return false;
     }

@@ -4,6 +4,7 @@
 #pragma once
 
 #include <span>
+#include <string>
 #include <string_view>
 
 #include "shader_recompiler/environment.h"
@@ -85,6 +86,9 @@ private:
     void EmitGlobalStore();
     void EmitSharedMemory();
     void EmitShuffleRegister();
+    void EmitFloatMinMax();
+    void EmitShift();
+    void EmitIntegerToFloat();
     void EmitUniformConstantLoad();
     [[nodiscard]] IR::U64 OffsetU64(u32 value, bool negative);
     void EmitUniformMove();
@@ -98,6 +102,7 @@ private:
     IR::IREmitter ir;
     Ampere::Instruction current{};
     std::string_view error;
+    std::string detailed_error; ///< Backs Error() when the message needs the opcode number.
 };
 
 /// Translate a linear run of instructions into one block. Stops at the first instruction with no

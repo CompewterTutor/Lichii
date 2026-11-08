@@ -4,6 +4,7 @@
 #pragma once
 
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -85,7 +86,9 @@ private:
     std::vector<bool> appended;
     IR::AbstractSyntaxList syntax_list;
     IR::Block* return_block{};
-    std::string_view error;
+    /// The translator builds some of its messages at runtime, so the structurer has to own a copy:
+    /// keeping a string_view would dangle as soon as the translator goes out of scope.
+    std::string error;
 };
 
 } // namespace Shader::Native
