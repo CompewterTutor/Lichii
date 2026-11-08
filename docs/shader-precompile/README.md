@@ -51,8 +51,8 @@ never depends on the host GPU: "native" means the guest instruction set, not the
 
 ```sh
 build-sweep/bin/shader-sweep <program.bin> --stage compute --format instructions --native
-# {"phase":"native","implemented_opcodes":70,"control_blocks":91,
-#  "unimplemented_instructions":184,"unimplemented":[{"count":14,"opcode":"0x892"}, ...],
+# {"phase":"native","implemented_opcodes":72,"control_blocks":91,
+#  "unimplemented_instructions":161,"unimplemented":[{"count":14,"opcode":"0x892"}, ...],
 #  "status":"blocked","error":{"code":"translation_failed",...}}
 ```
 

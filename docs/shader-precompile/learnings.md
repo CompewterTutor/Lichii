@@ -797,3 +797,21 @@ Numbers here come from two OoT sessions on the local machine (build `nx2-99ac3d5
   now has 52 opcodes at a handful of uses each, while the stop is a single instruction whose
   *semantics*, not encoding, is missing. That is the difference between "add another opcode" and
   "go and find out what the hardware means".
+
+## 2026-11-08 - Native frontend: R2UR, USHF and the LEA carry question settled
+
+- The "dual carry output" that blocked the program turned out not to be a gap at all: bits 84-86 of
+  LEA are a second output that the *lowering ignores outright*, and the lowering's programs render
+  correctly with it dropped. Matching that shipped behaviour is evidence-based, not a guess, and it
+  took the program from 60 to 90 IR instructions in one step. The lesson is to check what the
+  shipping path does with a field before treating it as unknown.
+- R2UR (0x3c2) broadcasts the first lane satisfying the execution predicate into a uniform register.
+  IR has `SubgroupBallot` but no "find lowest set bit", and `ballot & -ballot` isolates exactly one
+  bit, whose index `FindUMsb` then returns. That is exact for a 32-lane subgroup and needs no
+  helper opcode.
+- USHF (0x899) is the uniform-file version of the immediate SHF: the word-2 patterns identify which
+  word is shifted (`0x08011600 | high` for the high word, `0x0800163f` for a right shift of one
+  register, `0x0800063f` for a left shift).
+- Coverage: 184 to 161 unimplemented instructions, 72 opcodes, and the structurer now emits 100 IR
+  instructions before stopping (60 at the start of this batch). The next stop is 0x28c, a uniform
+  compare that writes a uniform predicate.
