@@ -565,6 +565,103 @@ void Translator::EmitMultiFunction() {
     WriteFloat(value);
 }
 
+IR::U64 Translator::OffsetU64(u32 value, bool negative) {
+    return IR::U64{ir.PackUint2x32(
+        ir.CompositeConstruct(ir.Imm32(value), ir.Imm32(negative ? 0xffffffffU : 0)))};
+}
+
+void Translator::EmitGlobalLoad() {
+    // LDG: a 64-bit address built from a uniform base pair, an optional register offset and an
+    // immediate byte offset, then a load of 8 to 128 bits.
+    const u32 size = current.Bits(73, 3);
+    const u32 address = current.Bits(24, 8);
+    if (size > 6) {
+        throw Unsupported{"native global load size"};
+    }
+    if ((current.words[2] & ~(0x04000000U | 0x3fU | 0xe00U)) != 0x081e8100U ||
+        current.Bits(38, 2) != 0) {
+        throw Unsupported{"native global load uniform addressing mode"};
+    }
+    const u32 uniform = current.Bits(32, 6);
+    const IR::U64 base = ir.PackUint2x32(
+        ir.CompositeConstruct(Uniform(uniform), Uniform(uniform + 1)));
+    IR::U64 pointer = base;
+    if (address != 255) {
+        // Bit 90 makes the register offset a 64-bit pair; otherwise it is zero-extended.
+        const IR::U64 offset =
+            current.Bits(90, 1)
+                ? IR::U64{ir.PackUint2x32(ir.CompositeConstruct(Gpr(address), Gpr(address + 1)))}
+                : IR::U64{ir.PackUint2x32(ir.CompositeConstruct(Gpr(address), ir.Imm32(0)))};
+        pointer = ir.IAdd(pointer, offset);
+    }
+    const u32 raw = current.Bits(40, 24);
+    const s32 immediate = static_cast<s32>(raw << 8) >> 8;
+    pointer = ir.IAdd(pointer, OffsetU64(static_cast<u32>(immediate), immediate < 0));
+
+    const u32 dest = current.Bits(16, 8);
+    const auto store = [&](u32 index, const IR::U32& value) {
+        const Guard guard = DecodeGuard(current);
+        if (guard) {
+            const IR::U1 condition{ir.GetPred(static_cast<IR::Pred>(guard.index), guard.negated)};
+            const IR::Reg reg{Register(index)};
+            ir.SetReg(reg, IR::U32{ir.Select(condition, value, ir.GetReg(reg))});
+            return;
+        }
+        if (index != 255) {
+            ir.SetReg(Register(index), value);
+        }
+    };
+    switch (size) {
+    case 0:
+        store(dest, ir.LoadGlobalU8(pointer));
+        return;
+    case 1:
+        store(dest, ir.LoadGlobalS8(pointer));
+        return;
+    case 2:
+        store(dest, ir.LoadGlobalU16(pointer));
+        return;
+    case 3:
+        store(dest, ir.LoadGlobalS16(pointer));
+        return;
+    case 4:
+        store(dest, ir.LoadGlobal32(pointer));
+        return;
+    case 5: {
+        const IR::Value pair{ir.LoadGlobal64(pointer)};
+        store(dest, IR::U32{ir.CompositeExtract(pair, 0)});
+        store(dest + 1, IR::U32{ir.CompositeExtract(pair, 1)});
+        return;
+    }
+    default:
+        throw Unsupported{"native global load size"};
+    }
+}
+
+void Translator::EmitUniformConstantLoad() {
+    // ULDC: a constant buffer word or pair loaded into the uniform register file. The indexed form
+    // is not handled yet: its index register's units have not been confirmed against captured code.
+    const u32 dest = current.Bits(16, 8);
+    const u32 width = current.Bits(73, 3);
+    const u32 offset = current.Bits(38, 16);
+    const u32 bank = ConstantBufferBank(current.Bits(54, 5));
+    if (current.Bits(0, 12) != 0xab9) {
+        throw Unsupported{"native indexed uniform constant load"};
+    }
+    if (bank >= 18 || dest >= NUM_UNIFORM_REGISTERS || (width != 4 && width != 5)) {
+        throw Unsupported{"native uniform constant load mode"};
+    }
+    if (offset % (width == 5 ? 8U : 4U) != 0 ||
+        (width == 5 && dest + 1 >= NUM_UNIFORM_REGISTERS)) {
+        throw Unsupported{"native uniform constant load alignment"};
+    }
+    ir.SetReg(UniformRegister(dest), ir.GetCbuf(ir.Imm32(bank), ir.Imm32(offset)));
+    if (width == 5) {
+        ir.SetReg(UniformRegister(dest + 1),
+                  ir.GetCbuf(ir.Imm32(bank), ir.Imm32(offset + 4)));
+    }
+}
+
 void Translator::EmitFloatAdd() {
     if (current.Bits(81, 10) || current.Bits(91, 1)) {
         throw Unsupported{"native FADD mode"};
@@ -685,6 +782,13 @@ void Translator::Emit() {
         return;
     case 0x308: // MUFU
         EmitMultiFunction();
+        return;
+    case 0x981: // LDG
+        EmitGlobalLoad();
+        return;
+    case 0xab9: // ULDC
+    case 0xabb: // ULDC indexed
+        EmitUniformConstantLoad();
         return;
     case 0x919: // S2R
     case 0x9c3: // S2UR

@@ -81,6 +81,9 @@ private:
     void EmitIntegerAdd();
     void EmitPredicateToRegister();
     void EmitMultiFunction();
+    void EmitGlobalLoad();
+    void EmitUniformConstantLoad();
+    [[nodiscard]] IR::U64 OffsetU64(u32 value, bool negative);
     void EmitUniformMove();
     void EmitPredicateLut();
     void EmitFloatAdd();

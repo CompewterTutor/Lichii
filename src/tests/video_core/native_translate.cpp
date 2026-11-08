@@ -123,6 +123,10 @@ constexpr Instruction MultiFunction{{0x00057308, 0x00000027, 0x00000400, 0x0003e
 constexpr Instruction PredicateToRegister{{0xff037803, 0x00000004, 0x00000000, 0x000fca00}};
 /// IADD3 R30, R29, R39, RZ
 constexpr Instruction IntegerAdd{{0x1d1e7210, 0x00000027, 0x07ffe0ff, 0x000fc800}};
+/// LDG.E.CONSTANT R0, [R0.U32+UR4]
+constexpr Instruction GlobalLoad{{0x00007981, 0x00000004, 0x081e8900, 0x000ea200}};
+/// ULDC.64 UR4, c[0x0][0x50]
+constexpr Instruction UniformConstantLoad{{0x00047ab9, 0x00001400, 0x00000a00, 0x000fe400}};
 
 } // Anonymous namespace
 
@@ -274,6 +278,29 @@ TEST_CASE("IADD3 adds two registers", "[video_core][native]") {
     const IR::Inst* store = add.Find(IR::Opcode::SetRegister);
     REQUIRE(store != nullptr);
     CHECK(store->Arg(0).Reg() == IR::Reg::R30);
+}
+
+TEST_CASE("LDG loads through a uniform base plus a register offset", "[video_core][native]") {
+    const Translated load{GlobalLoad};
+    REQUIRE(load.Find(IR::Opcode::LoadGlobal32) != nullptr);
+    // The address is assembled as a 64-bit pair, so the base and the offset are packed.
+    CHECK(load.Count(IR::Opcode::PackUint2x32) >= 1);
+    const IR::Inst* store = load.Find(IR::Opcode::SetRegister);
+    REQUIRE(store != nullptr);
+    CHECK(store->Arg(0).Reg() == IR::Reg::R0);
+}
+
+TEST_CASE("ULDC loads a constant buffer pair into uniform registers", "[video_core][native]") {
+    const Translated load{UniformConstantLoad};
+    CHECK(load.Count(IR::Opcode::GetCbufU32) == 2);
+    size_t uniform_writes{};
+    for (const IR::Inst& inst : load.block) {
+        if (inst.GetOpcode() == IR::Opcode::SetRegister) {
+            uniform_writes |= static_cast<u32>(inst.Arg(0).Reg()) ==
+                              Shader::Native::UNIFORM_REGISTER_BASE + 4;
+        }
+    }
+    CHECK(uniform_writes);
 }
 
 TEST_CASE("Opcode gaps fail instead of guessing", "[video_core][native]") {

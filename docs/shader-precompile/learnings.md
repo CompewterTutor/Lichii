@@ -703,3 +703,23 @@ Numbers here come from two OoT sessions on the local machine (build `nx2-99ac3d5
 - Remaining top of the list is now `0x981` LDG (39), `0x589` (27), `0x986` (27), `0x810` (26),
   `0x388` (21), `0x984` (21), `0xabb` (20, ULDC) and `0xab9` (18) — memory access and uniform
   constant loads, which need address analysis rather than one-instruction translations.
+
+## 2026-11-08 - Native memory access: LDG and ULDC
+
+- LDG (0x981) assembles a 64-bit address from a uniform register pair (bits 32-37), an optional
+  register offset (bits 24-31, a 64-bit pair when bit 90 is set, zero-extended otherwise) and a
+  signed 24-bit immediate byte offset (bits 40-63). The IR side is a plain
+  `LoadGlobalU8/S8/U16/S16/32/64` on that address, so the native path has none of the lowering's
+  address-splitting constraints.
+- The addressing mode is unambiguous in word 2: `0x081e8100` (with the base pair and the optional
+  register) is the form seen here; the descriptor form (`0x0c1e1100`) is rejected for now rather
+  than guessed.
+- ULDC (0xab9 direct, 0xabb indexed) loads a constant buffer word or pair into the uniform register
+  file: destination bits 16-23, width bits 73-75 (4 = 32-bit, 5 = 64-bit), byte offset bits 38-53,
+  bank bits 54-58. The direct form maps straight onto `GetCbuf(bank, offset)`. The indexed form is
+  deliberately not implemented yet: the units of its index register have not been confirmed against
+  captured code, and guessing them would corrupt every load through it.
+- Coverage on the captured OoT compute program: 452 to 375 unimplemented instructions, 54 opcodes.
+  The structurer now emits 35 IR instructions before meeting an unsupported opcode, up from 24.
+- Remaining tail: 0x589 SHFL with a register lane (27), 0x986 global store (27), 0x810 LOP3 with a
+  predicate output (26), 0x388 and 0x984 shared memory (21 each).
