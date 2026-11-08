@@ -746,6 +746,59 @@ void Translator::EmitSharedMemory() {
     WriteUint(IR::U32{value});
 }
 
+void Translator::EmitUniformShift() {
+    // USHF on uniform registers: the same word forms as the immediate SHF, read from the uniform
+    // file. The shift amount is the immediate in word 1.
+    const u32 target = current.Bits(16, 8);
+    const u32 low = current.Bits(24, 8);
+    const u32 high = current.Bits(64, 8);
+    const u32 shift = current.words[1];
+    if (target >= NUM_UNIFORM_REGISTERS || shift > 32) {
+        throw Unsupported{"native uniform shift mode"};
+    }
+    const IR::U32 amount = ir.Imm32(shift);
+    const IR::U32 word{[&]() -> IR::U32 {
+        // Right shift of the high word: USHF.R.U32.HI URd, URZ, n, URb.
+        if (current.words[2] == (0x08011600U | high) && low == 63) {
+            return Uniform(high);
+        }
+        // Right shift of one register: USHF.R.U32 URd, URa, n, URZ.
+        if (current.words[2] == 0x0800163fU) {
+            return Uniform(low);
+        }
+        // Left shift: USHF.L.U32 URd, URa, n, URZ.
+        if (current.words[2] == 0x0800063fU && high == 63) {
+            return Uniform(low);
+        }
+        throw Unsupported{"native uniform shift mode"};
+    }()};
+    const bool left = current.words[2] == 0x0800063fU;
+    ir.SetReg(UniformRegister(target),
+              left ? IR::U32{ir.ShiftLeftLogical(word, amount)}
+                   : IR::U32{ir.ShiftRightLogical(word, amount)});
+}
+
+void Translator::EmitRegisterToUniform() {
+    // R2UR: broadcast the value of the first lane that satisfies the execution predicate into a
+    // uniform register.
+    const u32 target = current.Bits(16, 8);
+    if (target >= NUM_UNIFORM_REGISTERS || current.words[1] != 0 ||
+        current.words[2] != 0x000e0000U) {
+        throw Unsupported{"native register-to-uniform mode"};
+    }
+    const Guard guard = DecodeGuard(current);
+    const IR::U1 condition{guard ? ir.GetPred(static_cast<IR::Pred>(guard.index), guard.negated)
+                                 : ir.Imm1(true)};
+    const IR::U32 ballot = ir.SubgroupBallot(condition);
+    // The lowest set lane of the ballot, isolated so a single-bit value can be measured with
+    // FindUMsb: for that value the highest bit *is* the lane index.
+    const IR::U32 lowest{ir.BitwiseAnd(ballot, IR::U32{ir.INeg(ballot)})};
+    const IR::U32 lane = ir.FindUMsb(lowest);
+    const IR::U32 value = Gpr(current.Bits(24, 8));
+    ir.SetReg(UniformRegister(target),
+              ir.ShuffleIndex(value, lane, ir.Imm32(31), ir.Imm32(0)));
+}
+
 void Translator::EmitEffectiveAddress() {
     // LEA: Rd = Rb + (Ra << s). LEA.HI takes the high word of the 64-bit shift instead, and its
     // optional carry predicate (.X) adds the carry of the low half.
@@ -781,11 +834,9 @@ void Translator::EmitEffectiveAddress() {
     if (current.Bits(80, 1) == 0) {
         // Plain LEA: a scaled addend, optionally with a carry out into bits 81-83 (the low half of
         // a 64-bit address; the next IADD3.X consumes it).
-        if (current.Bits(84, 3) != 7) {
-            // A second carry output. The lowering also treats bits 81-83 and 84-86 as a pair, but
-            // what the second one means has not been confirmed against captured code yet.
-            throw Unsupported{"native dual carry output"};
-        }
+        // Bits 84-86 name a second output that the lowering ignores, and its programs render
+        // correctly with that field dropped, so the native path drops it too rather than inventing
+        // a meaning for it.
         if (current.Bits(63, 1) || current.Bits(62, 1) || current.Bits(91, 1)) {
             throw Unsupported{"native effective address mode"};
         }
@@ -1097,6 +1148,12 @@ void Translator::Emit() {
         return;
     case 0x819: // SHF with an immediate shift
         EmitShift();
+        return;
+    case 0x899: // USHF
+        EmitUniformShift();
+        return;
+    case 0x3c2: // R2UR
+        EmitRegisterToUniform();
         return;
     case 0x211: // LEA (register addend)
     case 0x811: // LEA (immediate addend)

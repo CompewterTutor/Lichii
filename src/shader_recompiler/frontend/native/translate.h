@@ -89,6 +89,8 @@ private:
     void EmitFloatMinMax();
     void EmitShift();
     void EmitEffectiveAddress();
+    void EmitRegisterToUniform();
+    void EmitUniformShift();
     void EmitIntegerToFloat();
     void EmitUniformConstantLoad();
     [[nodiscard]] IR::U64 OffsetU64(u32 value, bool negative);
