@@ -356,15 +356,10 @@ void TightenOutputVertices(IR::Program& program) {
 }
 } // Anonymous namespace
 
-IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Block>& block_pool,
-                             Environment& env, Flow::CFG& cfg, const HostTranslateInfo& host_info) {
+void FinalizeProgram(IR::Program& program, Environment& env,
+                     const HostTranslateInfo& host_info) {
     HostTranslateInfo normalized_host_info{host_info};
     normalized_host_info.ApplyDescriptorLimitPolicy();
-
-    IR::Program program;
-    program.syntax_list = BuildASL(inst_pool, block_pool, env, cfg, normalized_host_info);
-    program.blocks = GenerateBlocks(program.syntax_list);
-    program.post_order_blocks = PostOrder(program.syntax_list.front());
     program.stage = env.ShaderStage();
     program.local_memory_size = env.LocalMemorySize();
     switch (program.stage) {
@@ -476,6 +471,18 @@ IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Blo
     CollectInterpolationInfo(env, program);
     AddNVNStorageBuffers(program);
     Optimization::LimitSampledTextureArrays(program, normalized_host_info);
+}
+
+IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Block>& block_pool,
+                             Environment& env, Flow::CFG& cfg, const HostTranslateInfo& host_info) {
+    HostTranslateInfo normalized_host_info{host_info};
+    normalized_host_info.ApplyDescriptorLimitPolicy();
+
+    IR::Program program;
+    program.syntax_list = BuildASL(inst_pool, block_pool, env, cfg, normalized_host_info);
+    program.blocks = GenerateBlocks(program.syntax_list);
+    program.post_order_blocks = PostOrder(program.syntax_list.front());
+    FinalizeProgram(program, env, host_info);
     return program;
 }
 

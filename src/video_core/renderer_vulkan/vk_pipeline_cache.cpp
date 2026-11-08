@@ -42,6 +42,7 @@
 #include "video_core/renderer_vulkan/vertex_repack.h"
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
 #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
+#include "shader_recompiler/frontend/native/program.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
@@ -66,6 +67,18 @@ using Shader::Maxwell::ConvertLegacyToGeneric;
 using Shader::Maxwell::GenerateGeometryPassthrough;
 using Shader::Maxwell::MergeDualVertexPrograms;
 using Shader::Maxwell::TranslateProgram;
+
+namespace {
+
+/// EDEN_NX2_NATIVE=1: build Switch 2 programs with the native frontend (NVN2 instructions straight
+/// to IR) and fall back to the lowering per program, so an untranslated instruction costs one
+/// program its fast path rather than the whole draw.
+[[nodiscard]] bool NativeFrontendEnabled() {
+    static const bool enabled{std::getenv("EDEN_NX2_NATIVE") != nullptr};
+    return enabled;
+}
+
+} // Anonymous namespace
 using VideoCommon::ComputeEnvironment;
 using VideoCommon::FileEnvironment;
 using VideoCommon::GenericEnvironment;
@@ -1455,7 +1468,19 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
 
         const u32 cfg_offset{static_cast<u32>(env.StartAddress() + sizeof(Shader::ProgramHeader))};
         Shader::Maxwell::Flow::CFG cfg(env, pools.flow_block, cfg_offset, index == 0);
-        if (!uses_vertex_a || index != 1) {
+        if (NativeFrontendEnabled() && !env.NativeInstructions().empty() &&
+            (!uses_vertex_a || index != 1)) {
+            try {
+                programs[index] = Shader::Native::TranslateProgram(
+                    pools.inst, pools.block, env, env.NativeInstructions(), host_info);
+                LOG_INFO(Render_Vulkan, "Native frontend: {:#x} translated",
+                         key.unique_hashes[index]);
+            } catch (const std::exception& exception) {
+                LOG_INFO(Render_Vulkan, "Native frontend: {:#x} fell back ({})",
+                         key.unique_hashes[index], exception.what());
+                programs[index] = TranslateProgram(pools.inst, pools.block, env, cfg, host_info);
+            }
+        } else if (!uses_vertex_a || index != 1) {
             // Normal path
             programs[index] = TranslateProgram(pools.inst, pools.block, env, cfg, host_info);
         } else {

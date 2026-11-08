@@ -739,3 +739,23 @@ Numbers here come from two OoT sessions on the local machine (build `nx2-99ac3d5
   (1884 at the start, so 86%). The remaining tail is 0x388 shared store with a register offset (21),
   0x306 (16), 0x209 FMNMX (15), 0x892 (14), 0x3c2 (13), 0xd06 (12) — a long tail of 56 distinct
   opcodes, each with a handful of uses.
+
+## 2026-11-08 - Native frontend wired into the pipeline behind EDEN_NX2_NATIVE
+
+- The stage setup and optimization pipeline moved out of `Maxwell::TranslateProgram` into
+  `Maxwell::FinalizeProgram`, so both frontends feed the same passes. Without that, the native path
+  would have been a second, silently diverging pipeline.
+- `Shader::Native::TranslateProgram` builds the syntax list, blocks and post-order from the
+  structurer and then calls `FinalizeProgram`. It throws when the structurer cannot translate an
+  instruction, which is what lets the shader cache fall back per program.
+- The captured native instructions now live in `LoweredNativeCode::native`, exposed through
+  `Environment::NativeInstructions()`, because the environment's `code` is the *lowered* Maxwell
+  stream. The native frontend needs the original words.
+- `EDEN_NX2_NATIVE=1` makes the Vulkan pipeline cache try the native frontend first and fall back to
+  the lowering on any exception, logging which happened per shader hash. The OpenGL path is not
+  wired: the experiment targets Vulkan.
+- Tests: two new cases run the whole pipeline on a two-instruction program (and check that an
+  untranslatable program throws so the fallback happens), which is the first end-to-end exercise of
+  the native path rather than a syntax-list assertion.
+- Nothing renders through the native path yet: every captured program still stops on an
+  unimplemented instruction, so the fallback is the path actually taken until the tail is clear.

@@ -40,6 +40,9 @@ struct LoweredNativeCode {
     std::vector<Shader::Ampere::Instruction> trap_prefix;
     /// Bytes of the native program that were read, header included.
     size_t source_size{};
+    /// The captured native instructions, kept so the native frontend can translate them directly
+    /// instead of the lowered Maxwell stream.
+    std::vector<Shader::Ampere::Instruction> native;
     /// Constant buffer holding the texture handles if the program requires one, otherwise ~0U
     /// (the engine's register value is used).
     u32 texture_bound = ~0U;
@@ -66,6 +69,8 @@ public:
     [[nodiscard]] u32 TranslateProgramAddress(u32 address) const override;
 
     [[nodiscard]] bool IsNativeProgram() const override;
+
+    [[nodiscard]] std::span<const Shader::Ampere::Instruction> NativeInstructions() const override;
 
     [[nodiscard]] bool IsCbufStorageBufferPointer(u32 index, u32 offset) override;
 

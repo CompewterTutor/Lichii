@@ -438,6 +438,13 @@ private:
 
 // A native program is captured and lowered once, when the shader cache first meets it. The
 // environments built later for its pipelines receive that result instead of lowering again.
+std::span<const Shader::Ampere::Instruction> GenericEnvironment::NativeInstructions() const {
+    if (!lowered_native || lowered_native->native.empty()) {
+        return {};
+    }
+    return lowered_native->native;
+}
+
 void GenericEnvironment::InitializeNativeCode(std::shared_ptr<const LoweredNativeCode> lowered,
                                               u32 source_header_size, bool geometry_stage) {
     if (!lowered) {
@@ -626,6 +633,9 @@ std::shared_ptr<const LoweredNativeCode> GenericEnvironment::LowerNativeCode(u32
     result->texture_bound = lowered.required_texture_buffer;
     result->source_size = native_header_size + lowered.source_size;
     result->trap_prefix.assign(native.begin(), native.begin() + trap_count);
+    result->native.assign(native.begin(),
+                          native.begin() + (native_header_size + lowered.source_size) /
+                                               sizeof(Shader::Ampere::Instruction));
     auto& lowered_code = result->code;
     lowered_code.resize(sizeof(sph) / sizeof(u64));
     std::memcpy(lowered_code.data(), &sph, sizeof(sph));

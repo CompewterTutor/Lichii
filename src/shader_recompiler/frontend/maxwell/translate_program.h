@@ -20,6 +20,10 @@ namespace Shader::Maxwell {
                                            ObjectPool<IR::Block>& block_pool, Environment& env,
                                            Flow::CFG& cfg, const HostTranslateInfo& host_info);
 
+/// Runs the stage setup and the optimization pipeline shared by both frontends, so a program built
+/// from native instructions goes through exactly the same passes as a lowered one.
+void FinalizeProgram(IR::Program& program, Environment& env, const HostTranslateInfo& host_info);
+
 [[nodiscard]] IR::Program MergeDualVertexPrograms(IR::Program& vertex_a, IR::Program& vertex_b,
                                                   Environment& env_vertex_b);
 

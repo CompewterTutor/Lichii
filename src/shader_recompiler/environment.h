@@ -7,12 +7,14 @@
 #pragma once
 
 #include <array>
+#include <span>
 #include "common/container/unordered_map.h"
 
 #include "common/common_types.h"
 #include "shader_recompiler/program_header.h"
 #include "shader_recompiler/shader_info.h"
 #include "shader_recompiler/stage.h"
+#include "shader_recompiler/frontend/ampere/instruction.h"
 #include "shader_recompiler/frontend/ir/value.h"
 
 namespace Shader::IR {
@@ -106,6 +108,12 @@ public:
     [[nodiscard]] virtual bool HasHLEMacroState() const = 0;
 
     [[nodiscard]] virtual bool HasNativeInstructions() const { return false; }
+
+    /// The captured native (Switch 2) instructions of this program, empty when it has none. The
+    /// native frontend translates these directly instead of the lowered Maxwell stream.
+    [[nodiscard]] virtual std::span<const Ampere::Instruction> NativeInstructions() const {
+        return {};
+    }
 
     [[nodiscard]] virtual std::optional<ReplaceConstant> GetReplaceConstBuffer(u32 bank,
                                                                                u32 offset) = 0;

@@ -64,6 +64,12 @@ with `unsupported native opcode` means the control flow was fine and an instruct
 A program with an empty `unimplemented` list is fully covered. Opcodes are added one family at a
 time, each with a captured instruction and its nvdisasm decode.
 
+To run the frontend for real, start the emulator with `EDEN_NX2_NATIVE=1`. The Vulkan pipeline cache
+then tries the native frontend first and falls back to the lowering for any program it cannot
+translate, logging `Native frontend: <hash> translated` or `... fell back (<reason>)` per shader. It
+shares the stage setup and optimization passes with the Maxwell path (`Maxwell::FinalizeProgram`), so
+a translated program is not a second pipeline. The OpenGL renderer is not wired.
+
 ## Diagnostic switches
 
 All are env flags, off by default unless noted, and none of them merge to `nx2` as a behaviour

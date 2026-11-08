@@ -64,6 +64,8 @@ add_library(shader_recompiler STATIC
     frontend/native/control_flow.cpp
     frontend/native/control_flow.h
     frontend/native/decode.h
+    frontend/native/program.cpp
+    frontend/native/program.h
     frontend/native/translate.cpp
     frontend/native/translate.h
     frontend/native/translate_program.cpp
