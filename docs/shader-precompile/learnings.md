@@ -778,3 +778,22 @@ Numbers here come from two OoT sessions on the local machine (build `nx2-99ac3d5
     from "unsupported native opcode" on every program to the exact number blocking each one.
 - Next blockers, in program order: 0x811 LEA immediate (the current stop), then 0x807/0x808
   LOP3 variants, 0x892 ULOP3 and 0x899 USHF.
+
+## 2026-11-08 - Native frontend: LEA, and the first deliberately unguessed gap
+
+- LEA (0x211/0x811/0xa11/0xc11) is `Rb + (Ra << s)` with `s` in bits 75-79; LEA.HI takes the high
+  word of the 64-bit shift instead, and `.X` adds the carry predicate from bits 87-90. The plain form
+  can also write a carry-out predicate into bits 81-83, computed as "the 64-bit sum has a nonzero
+  high word".
+- Coverage: 198 to 184 unimplemented instructions, 70 opcodes, and the structurer now emits 60 IR
+  instructions. On the captured program it stops on `0x211` with a *second* carry output in bits
+  84-86.
+- That second output is deliberately not implemented. The lowering treats bits 81-83 and 84-86 as a
+  pair (`first`/`second`) and compares a 64-bit high word against 1 and 2 to fill them, but what the
+  second predicate means has not been confirmed against a decoded instruction. Guessing it would
+  silently produce a wrong 64-bit address for every consumer of that predicate, so the frontend
+  reports `native dual carry output` and lets the program fall back to the lowering.
+- Learning: the coverage histogram and the "where does it stop" answer have diverged. The histogram
+  now has 52 opcodes at a handful of uses each, while the stop is a single instruction whose
+  *semantics*, not encoding, is missing. That is the difference between "add another opcode" and
+  "go and find out what the hardware means".

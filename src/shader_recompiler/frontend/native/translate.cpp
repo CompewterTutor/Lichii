@@ -746,6 +746,88 @@ void Translator::EmitSharedMemory() {
     WriteUint(IR::U32{value});
 }
 
+void Translator::EmitEffectiveAddress() {
+    // LEA: Rd = Rb + (Ra << s). LEA.HI takes the high word of the 64-bit shift instead, and its
+    // optional carry predicate (.X) adds the carry of the low half.
+    const u32 opcode = current.Bits(0, 12);
+    const u32 shift = current.Bits(75, 5);
+    const u32 high = current.Bits(64, 8);
+    const bool extended = current.Bits(74, 1) != 0;
+    if (current.Bits(72, 1) != 0 || (high != 255 && current.Bits(73, 1)) != 0) {
+        throw Unsupported{"native effective address mode"};
+    }
+    const IR::U32 a = Gpr(current.Bits(24, 8));
+    const IR::U32 b{[&]() -> IR::U32 {
+        switch (opcode) {
+        case 0x811:
+            return ir.Imm32(current.words[1]);
+        case 0xa11: {
+            const u32 bank = ConstantBufferBank(current.Bits(54, 5));
+            if (bank >= 18 || (current.Bits(38, 16) % 4) != 0) {
+                throw Unsupported{"native constant buffer address"};
+            }
+            return ir.GetCbuf(ir.Imm32(bank), ir.Imm32(current.Bits(38, 16)));
+        }
+        case 0xc11:
+            if (current.words[1] >= NUM_UNIFORM_REGISTERS) {
+                throw Unsupported{"native uniform LEA register"};
+            }
+            return Uniform(current.words[1]);
+        default:
+            return Gpr(current.Bits(32, 8));
+        }
+    }()};
+
+    if (current.Bits(80, 1) == 0) {
+        // Plain LEA: a scaled addend, optionally with a carry out into bits 81-83 (the low half of
+        // a 64-bit address; the next IADD3.X consumes it).
+        if (current.Bits(84, 3) != 7) {
+            // A second carry output. The lowering also treats bits 81-83 and 84-86 as a pair, but
+            // what the second one means has not been confirmed against captured code yet.
+            throw Unsupported{"native dual carry output"};
+        }
+        if (current.Bits(63, 1) || current.Bits(62, 1) || current.Bits(91, 1)) {
+            throw Unsupported{"native effective address mode"};
+        }
+        const IR::U64 wide_b{ir.PackUint2x32(ir.CompositeConstruct(b, ir.Imm32(0)))};
+        const IR::U64 wide_a{ir.PackUint2x32(ir.CompositeConstruct(a, ir.Imm32(0)))};
+        const IR::U64 sum{ir.IAdd(wide_b, IR::U64{ir.ShiftLeftLogical(wide_a, ir.Imm32(shift))})};
+        const IR::Value halves{ir.UnpackUint2x32(sum)};
+        WriteUint(IR::U32{ir.CompositeExtract(halves, 0)});
+        const u32 carry = current.Bits(81, 3);
+        if (carry != 7) {
+            IR::U1 condition{ir.INotEqual(IR::U32{ir.CompositeExtract(halves, 1)}, ir.Imm32(0))};
+            const Guard guard = DecodeGuard(current);
+            if (guard) {
+                condition = IR::U1{ir.Select(
+                    ir.GetPred(static_cast<IR::Pred>(guard.index), guard.negated), condition,
+                    ir.GetPred(static_cast<IR::Pred>(carry)))};
+            }
+            ir.SetPred(static_cast<IR::Pred>(carry), condition);
+        }
+        return;
+    }
+    // LEA.HI: the high word of the 64-bit product-shift.
+    if (high != 255) {
+        // A funnel shift with a third register; not captured yet.
+        throw Unsupported{"native high effective address mode"};
+    }
+    const IR::U64 wide = ir.PackUint2x32(ir.CompositeConstruct(a, ir.Imm32(0)));
+    const IR::U64 shifted{ir.ShiftLeftLogical(wide, ir.Imm32(shift))};
+    const IR::U32 high_word{ir.CompositeExtract(ir.UnpackUint2x32(shifted), 1)};
+    const IR::U32 addend{[&]() -> IR::U32 {
+        if (!extended) {
+            return b;
+        }
+        const u32 carry = current.Bits(87, 3);
+        const IR::U1 condition{carry == 7 ? ir.Imm1(true)
+                                          : ir.GetPred(static_cast<IR::Pred>(carry),
+                                                       current.Bits(90, 1) != 0)};
+        return IR::U32{ir.Select(condition, ir.Imm32(1), ir.Imm32(0))};
+    }()};
+    WriteUint(IR::U32{ir.IAdd(b, IR::U32{ir.IAdd(high_word, addend)})});
+}
+
 void Translator::EmitShift() {
     // SHF with an immediate shift. Only the plain word forms are handled: a right shift reads the
     // high word, a left shift the low word, and the other word must be RZ.
@@ -1015,6 +1097,12 @@ void Translator::Emit() {
         return;
     case 0x819: // SHF with an immediate shift
         EmitShift();
+        return;
+    case 0x211: // LEA (register addend)
+    case 0x811: // LEA (immediate addend)
+    case 0xa11: // LEA (constant buffer addend)
+    case 0xc11: // LEA (uniform addend)
+        EmitEffectiveAddress();
         return;
     case 0x306: // I2F
     case 0xd06: // I2F (uniform source)
