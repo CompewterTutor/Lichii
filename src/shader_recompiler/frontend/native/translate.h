@@ -82,6 +82,9 @@ private:
     void EmitPredicateToRegister();
     void EmitMultiFunction();
     void EmitGlobalLoad();
+    void EmitGlobalStore();
+    void EmitSharedMemory();
+    void EmitShuffleRegister();
     void EmitUniformConstantLoad();
     [[nodiscard]] IR::U64 OffsetU64(u32 value, bool negative);
     void EmitUniformMove();

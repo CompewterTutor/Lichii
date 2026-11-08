@@ -495,11 +495,28 @@ void Translator::EmitIntegerAdd() {
     if ((current.words[2] & ~0xffU) != 0x07ffe000U) {
         throw Unsupported{"native add carry mode"};
     }
+    const u32 opcode = current.Bits(0, 12);
     const IR::U32 a = Gpr(current.Bits(24, 8));
-    IR::U32 b = Gpr(current.Bits(32, 8));
-    if (current.Bits(63, 1)) {
-        b = ir.INeg(b);
-    }
+    IR::U32 b{[&]() -> IR::U32 {
+        switch (opcode) {
+        case 0x810:
+            return ir.Imm32(current.words[1]);
+        case 0xa10: {
+            const u32 bank = ConstantBufferBank(current.Bits(54, 5));
+            if (bank >= 18 || (current.Bits(38, 16) % 4) != 0) {
+                throw Unsupported{"native constant buffer address"};
+            }
+            return ir.GetCbuf(ir.Imm32(bank), ir.Imm32(current.Bits(38, 16)));
+        }
+        case 0xc10:
+            return Uniform(current.Bits(32, 8));
+        default:
+            if (current.Bits(63, 1)) {
+                return ir.INeg(Gpr(current.Bits(32, 8)));
+            }
+            return Gpr(current.Bits(32, 8));
+        }
+    }()};
     WriteUint(IR::U32{ir.IAdd(a, b)});
 }
 
@@ -638,6 +655,122 @@ void Translator::EmitGlobalLoad() {
     }
 }
 
+void Translator::EmitGlobalStore() {
+    // STG: the same address shape as LDG, with the data in bits 32-39.
+    const u32 size = current.Bits(73, 3);
+    const u32 data = current.Bits(32, 8);
+    const u32 address = current.Bits(24, 8);
+    if (size > 6 || !current.Bits(72, 1)) {
+        throw Unsupported{"native global store size"};
+    }
+    if ((current.words[2] & ~(0x04000000U | 0x3fU | 0xe00U)) != 0x0810a100U ||
+        current.Bits(38, 2) != 0) {
+        throw Unsupported{"native global store uniform addressing mode"};
+    }
+    const u32 uniform = current.Bits(64, 6);
+    const IR::U64 base = ir.PackUint2x32(
+        ir.CompositeConstruct(Uniform(uniform), Uniform(uniform + 1)));
+    IR::U64 pointer = base;
+    if (address != 255) {
+        const IR::U64 offset =
+            current.Bits(90, 1)
+                ? IR::U64{ir.PackUint2x32(ir.CompositeConstruct(Gpr(address), Gpr(address + 1)))}
+                : IR::U64{ir.PackUint2x32(ir.CompositeConstruct(Gpr(address), ir.Imm32(0)))};
+        pointer = ir.IAdd(pointer, offset);
+    }
+    const u32 raw = current.Bits(40, 24);
+    const s32 immediate = static_cast<s32>(raw << 8) >> 8;
+    pointer = ir.IAdd(pointer, OffsetU64(static_cast<u32>(immediate), immediate < 0));
+
+    const auto value = [&](u32 index) -> IR::U32 {
+        return index == 255 ? ir.Imm32(0) : Gpr(index);
+    };
+    switch (size) {
+    case 0:
+        ir.WriteGlobalU8(pointer, value(data));
+        return;
+    case 1:
+        ir.WriteGlobalS8(pointer, value(data));
+        return;
+    case 2:
+        ir.WriteGlobalU16(pointer, value(data));
+        return;
+    case 3:
+        ir.WriteGlobalS16(pointer, value(data));
+        return;
+    case 4:
+        ir.WriteGlobal32(pointer, value(data));
+        return;
+    default:
+        // Wider stores write a register pair or quad from consecutive registers.
+        throw Unsupported{"native wide global store"};
+    }
+}
+
+void Translator::EmitSharedMemory() {
+    // LDS / STS: a register base, an optional scale (stride), an optional uniform base and a byte
+    // offset. IR takes the whole byte offset, so the pieces are simply added.
+    const u32 opcode = current.Bits(0, 12);
+    const u32 width = current.Bits(73, 3);
+    const u32 stride = current.Bits(78, 2);
+    const bool store = opcode == 0x988;
+    if (width > 6) {
+        throw Unsupported{"native shared memory width"};
+    }
+    const bool uniform_base = current.Bits(91, 1);
+    if (current.words[2] != ((width << 9) | (stride << 14) | (uniform_base ? 0x08000000U : 0U))) {
+        throw Unsupported{"native shared memory addressing mode"};
+    }
+    IR::U32 pointer = Gpr(current.Bits(24, 8));
+    if (stride != 0) {
+        // The register is scaled by the access size: 2^(stride + 1) bytes.
+        pointer = ir.ShiftLeftLogical(pointer, ir.Imm32(stride + 1));
+    }
+    if (uniform_base) {
+        pointer = ir.IAdd(pointer, Uniform(current.Bits(store ? 64 : 32, 8)));
+    }
+    pointer = ir.IAdd(pointer, ir.Imm32(current.Bits(40, 24)));
+
+    const u32 bit_size = width == 0 ? 8 : width == 2 ? 16 : width == 4 ? 32 : 0;
+    if (bit_size == 0) {
+        throw Unsupported{"native shared memory width"};
+    }
+    if (store) {
+        ir.WriteShared(bit_size, pointer, Gpr(current.Bits(32, 8)));
+        return;
+    }
+    const IR::Value value{ir.LoadShared(bit_size, false, pointer)};
+    WriteUint(IR::U32{value});
+}
+
+void Translator::EmitShuffleRegister() {
+    // SHFL with the lane in a register: the same shape as the immediate form.
+    if ((current.words[2] & ~0x000e0000U) || current.Bits(53, 5) || current.Bits(60, 4) ||
+        (current.words[3] & 0xc00001ffU)) {
+        throw Unsupported{"native register shuffle mode"};
+    }
+    const IR::U32 value = Gpr(current.Bits(24, 8));
+    const IR::U32 index = Gpr(current.Bits(32, 8));
+    const IR::U32 packed = ir.Imm32(current.Bits(40, 13));
+    const IR::U32 clamp = ir.BitFieldExtract(packed, ir.Imm32(0), ir.Imm32(5));
+    const IR::U32 segment = ir.BitFieldExtract(packed, ir.Imm32(8), ir.Imm32(5));
+    const IR::U32 result{[&] {
+        switch (current.Bits(58, 2)) {
+        case 0:
+            return ir.ShuffleIndex(value, index, clamp, segment);
+        case 1:
+            return ir.ShuffleUp(value, index, clamp, segment);
+        case 2:
+            return ir.ShuffleDown(value, index, clamp, segment);
+        case 3:
+            return ir.ShuffleButterfly(value, index, clamp, segment);
+        default:
+            throw Unsupported{"native shuffle mode"};
+        }
+    }()};
+    WriteUint(result);
+}
+
 void Translator::EmitUniformConstantLoad() {
     // ULDC: a constant buffer word or pair loaded into the uniform register file. The indexed form
     // is not handled yet: its index register's units have not been confirmed against captured code.
@@ -774,7 +907,10 @@ void Translator::Emit() {
     case 0xc12: // LOP3 (uniform register)
         EmitLogicLut();
         return;
-    case 0x210: // IADD3
+    case 0x210: // IADD3 (register)
+    case 0x810: // IADD3 (immediate)
+    case 0xa10: // IADD3 (constant buffer)
+    case 0xc10: // IADD3 (uniform)
         EmitIntegerAdd();
         return;
     case 0x803: // P2R
@@ -785,6 +921,16 @@ void Translator::Emit() {
         return;
     case 0x981: // LDG
         EmitGlobalLoad();
+        return;
+    case 0x986: // STG
+        EmitGlobalStore();
+        return;
+    case 0x984: // LDS
+    case 0x988: // STS
+        EmitSharedMemory();
+        return;
+    case 0x589: // SHFL with a register lane
+        EmitShuffleRegister();
         return;
     case 0xab9: // ULDC
     case 0xabb: // ULDC indexed

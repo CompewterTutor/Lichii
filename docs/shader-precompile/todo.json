@@ -794,8 +794,8 @@
           ],
           "complexity": "High",
           "created_at": "2026-11-07T16:10:04Z",
-          "updated_at": "2026-11-08T22:16:56Z",
-          "changelog": "Started ahead of the atomics: LDG (0x981) now builds its 64-bit address from a uniform pair, an optional register offset (zero-extended or a pair) and a signed 24-bit immediate, and loads through LoadGlobal*, which has none of the lowering's address-splitting limits. ULDC direct (0xab9) loads constant buffer words and pairs into the uniform file; the indexed form waits for captured evidence of its index units. Coverage: 452 to 375 unimplemented instructions on the captured program."
+          "updated_at": "2026-11-08T22:25:43Z",
+          "changelog": "Started ahead of the atomics: LDG (0x981) now builds its 64-bit address from a uniform pair, an optional register offset (zero-extended or a pair) and a signed 24-bit immediate, and loads through LoadGlobal*, which has none of the lowering's address-splitting limits. ULDC direct (0xab9) loads constant buffer words and pairs into the uniform file; the indexed form waits for captured evidence of its index units. Coverage: 452 to 375 unimplemented instructions on the captured program. Stores, shared memory and the register shuffle: STG (0x986) shares LDG's address shape; LDS/STS (0x984/0x988) add a register base, an optional uniform base and a stride-scaled offset; SHFL with a register lane (0x589) and the IADD3 immediate, constant buffer and uniform forms are in. Coverage: 375 to 268 unimplemented instructions, 61 opcodes."
         },
         {
           "id": "1.7.6",

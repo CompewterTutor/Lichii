@@ -723,3 +723,19 @@ Numbers here come from two OoT sessions on the local machine (build `nx2-99ac3d5
   The structurer now emits 35 IR instructions before meeting an unsupported opcode, up from 24.
 - Remaining tail: 0x589 SHFL with a register lane (27), 0x986 global store (27), 0x810 LOP3 with a
   predicate output (26), 0x388 and 0x984 shared memory (21 each).
+
+## 2026-11-08 - Native frontend: stores, shared memory and the register shuffle
+
+- STG (0x986) has the same address shape as LDG, with the data in bits 32-39, and IR takes the whole
+  64-bit address for `WriteGlobal*`.
+- LDS/STS (0x984/0x988) address shared memory as `Ra + (uniform base) + byte offset`, where a
+  non-zero stride in bits 78-79 scales the register by `1 << (stride + 1)` bytes. IR takes the byte
+  offset directly, so the pieces are added and the scale is one shift.
+- SHFL with a register lane (0x589) is the immediate form with the lane read from bits 32-39: the
+  mask (40-52) and mode (58-59) fields are identical.
+- IADD3's immediate, constant buffer and uniform forms (0x810/0xa10/0xc10) only change where the
+  second source comes from; the add is the same.
+- Coverage on the captured OoT compute program: 375 to 268 unimplemented instructions, 61 opcodes
+  (1884 at the start, so 86%). The remaining tail is 0x388 shared store with a register offset (21),
+  0x306 (16), 0x209 FMNMX (15), 0x892 (14), 0x3c2 (13), 0xd06 (12) — a long tail of 56 distinct
+  opcodes, each with a handful of uses.
