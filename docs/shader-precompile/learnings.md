@@ -1122,3 +1122,27 @@ condition; the extra bit test was copied from the load path where it means somet
 Coverage: 3441 -> **3564 of 4008** translate (89%), all 3564 pass `spirv-val`. What is left is
 surfaces (`SULD`/`SUST`, 79), the `IADD3`/`IMAD` carry forms (80), calls (`0x944`, 36), `TLD4`
 (35), shared-memory widths (22) and `F2FP`/`R2P`.
+
+## 2026-11-09 - The native frontend only ran on a cold cache
+
+Live A/B on Ocarina of Time (Kokiri Forest save, `EDEN_NX2_NATIVE=1` against the lowered path):
+
+- `IPA` (0x326) and `ALD` (0x321) block every graphics shader at instruction 0, so the native
+  frontend cannot build a graphics program yet.
+- The compute programs it does handle behaved as expected, but the first run showed **zero** native
+  attempts and that exposed a design hole: a warm pipeline cache hands the pipeline builder a
+  `FileEnvironment`, which had no `NativeInstructions()`. Only `GenericEnvironment` (a fresh program
+  lowered this run) provided the captured stream, so `EDEN_NX2_NATIVE` did nothing at all once the
+  cache was warm. The flag was effectively "first run only".
+
+Fix: the captured native instruction stream is now serialized with the environment in the pipeline
+cache, and `FileEnvironment` returns it. `VulkanPipelineCacheVersion` went 50 -> 51 so old entries are
+rebuilt.
+
+Verified live: cold run without the flag serializes 707 graphics + 80 compute pipelines; the next
+run with the flag on that warm cache reports 1294 native attempts (127 translated, 1167 fell back),
+where before the fix it reported none.
+
+Measured, not assumed: a cold-cache native run reached the same save with the image matching the
+baseline within temporal noise (mean 5.9 per channel across the run boundary against 5.4 between two
+frames of the same run), with 112 of 1229 programs translating natively.

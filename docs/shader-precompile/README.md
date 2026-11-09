@@ -87,6 +87,14 @@ Measured over all 4008 compute programs captured from Ocarina of Time: **3564 tr
   has unit tests but no corpus coverage.
 - Next: textures (`TLD`/`TXQ`, most of the remaining 893), then `EDEN_NX2_NATIVE=1` on a real save
   for a screenshot A/B.
+
+## Live status
+
+- A/B on Ocarina of Time (Kokiri Forest save) done through the debug server. With a warm pipeline
+  cache, 1294 programs reach the native frontend and 127 translate; everything else falls back at
+  `ALD` (0x321) or `IPA` (0x326), so no graphics shader translates yet.
+- The captured native stream is serialized with the environment in the pipeline cache (version 51),
+  so the flag also works on cached programs, not just the first run.
 - Next: those families, then the first end-to-end compile (`spirv-val`), then `EDEN_NX2_NATIVE=1` on
   a real save for a screenshot A/B.
 - The `If` node a failed build leaves unfilled was a null-pointer trap for anything reading the
