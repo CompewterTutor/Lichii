@@ -92,6 +92,8 @@ private:
     void EmitLocalMemory();
     void EmitCopySpecialToRegisterPair();
     void EmitShuffleRegister();
+    void EmitFloatToInteger();
+    void EmitUniformMultiplyAddRegister();
     void EmitFloatMinMax();
     void EmitIntegerMinMax();
     void EmitFindLeadingOne();

@@ -919,3 +919,19 @@ Numbers here come from two OoT sessions on the local machine (build `nx2-99ac3d5
   blocked instruction instances down to 37. Remaining work is concentrated: `VOTE`/`VOTEU`,
   `ATOMG`/`REDG`/`REDUX` (warp- and memory-atomics), `F2I`/`F2IP`, `ULEA`, `UIADD3.X`, `UIMAD`,
   `LDC.U8`.
+
+## 2026-11-09 - F2I and UIMAD, and what is left
+
+- `F2I` (0x305) is the word form only: truncate, clamp to `[0, 2^32)`, convert unsigned, and turn
+  NaN into zero, which is exactly the clamp the Maxwell F2I path performs. Signed destinations and
+  the byte forms (`F2IP`) stay refused; they need their own evidence.
+- `UIMAD` with a uniform multiplier (0x2a4/0x2a5) reuses the lowering's mask for 0x2a4
+  (`(words[2] & ~0x080002ff) == 0x078e0000`) because the plain one rejects a legitimate form. The
+  wide form expands the product into four 16-bit partial products: IR has no 64-bit multiply and a
+  32-bit one truncates the cross terms.
+- Coverage: 15075 IR instructions, 109 opcodes, **28 blocked instruction instances** left, all in
+  three families: warp voting (`VOTE`, `VOTEU`), warp and memory atomics (`REDUX`, `ATOMG`, `REDG`),
+  and the remaining uniform/address forms (`ULEA`, `UIADD3`/`UIADD3.X`, `LDC.U8`, `F2IP`).
+- Those three families share a requirement the rest of the port did not have: they need the warp's
+  active-lane set (a ballot) or an atomic IR op, so they are the next real design step rather than
+  more field decoding.

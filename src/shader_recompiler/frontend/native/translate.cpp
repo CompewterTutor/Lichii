@@ -1467,6 +1467,86 @@ void Translator::EmitIntegerToFloat() {
     WriteFloat(IR::F32{value});
 }
 
+void Translator::EmitFloatToInteger() {
+    // F2I.FTZ.U32: truncate a float to an unsigned word, saturating at both ends and turning NaN
+    // into zero - the same clamp the Maxwell F2I path performs. Only the plain word form with an
+    // unsigned destination is confirmed; signed destinations and byte forms stay refused.
+    if ((current.words[2] & ~0x0001c100U) != 0x00203000U || current.Bits(72, 1) != 0) {
+        throw Unsupported{"native float-to-integer conversion mode"};
+    }
+    const IR::FpControl control{
+        .no_contraction = true,
+        .rounding = IR::FpRounding::DontCare,
+        .fmz_mode = current.Bits(80, 1) ? IR::FmzMode::FTZ : IR::FmzMode::None,
+    };
+    const IR::F32 source = ReadFloat(1);
+    const IR::F32 clamped{ir.FPClamp(IR::F32{ir.FPTrunc(source, control)}, ir.Imm32(0.0f),
+                                     ir.Imm32(4294967296.0f))};
+    const IR::U32 converted{ir.ConvertFToU(32, clamped)};
+    WriteUint(IR::U32{ir.Select(ir.FPIsNan(source), ir.Imm32(0), converted)});
+}
+
+void Translator::EmitUniformMultiplyAddRegister() {
+    // UIMAD with a uniform multiplier: URd = URa * URb + URc. The 0x2a5 form writes the 64-bit
+    // product plus a register pair, so the multiply is expanded into four 16-bit partial products:
+    // IR has no 64-bit multiply and a 32-bit one would truncate the cross terms.
+    const u32 target = current.Bits(16, 8);
+    const u32 addend = current.Bits(64, 8);
+    const bool wide = current.Bits(0, 12) == 0x2a5;
+    if (target >= NUM_UNIFORM_REGISTERS || current.Bits(24, 8) >= NUM_UNIFORM_REGISTERS ||
+        current.Bits(32, 8) >= NUM_UNIFORM_REGISTERS ||
+        (current.words[1] & ~0xffU) != 0 ||
+        (current.words[2] & ~(wide ? 0xffU : 0x080002ffU)) != (wide ? 0x0f8e0000U : 0x078e0000U)) {
+        throw Unsupported{"native uniform multiply mode"};
+    }
+    const IR::U32 a = Uniform(current.Bits(24, 8));
+    const IR::U32 b = Uniform(current.Bits(32, 8));
+    if (!wide) {
+        if (addend >= NUM_UNIFORM_REGISTERS) {
+            throw Unsupported{"native uniform multiply mode"};
+        }
+        const IR::U32 c{addend == 255 ? ir.Imm32(0) : Uniform(addend)};
+        IR::U32 value{ir.IAdd(IR::U32{ir.IMul(a, b)}, c)};
+        const u32 guard = current.Bits(12, 4);
+        if ((guard & 7) != 7) {
+            IR::U1 enabled = UniformPredicate(guard & 7);
+            if ((guard & 8) != 0) {
+                enabled = IR::U1{ir.LogicalNot(enabled)};
+            }
+            value = IR::U32{ir.Select(enabled, value, Uniform(target))};
+        }
+        ir.SetReg(UniformRegister(target), value);
+        return;
+    }
+    if (target + 1 >= NUM_UNIFORM_REGISTERS || (target % 2) != 0 ||
+        (addend != 255 && (addend % 2) != 0) || addend + 1 >= NUM_UNIFORM_REGISTERS) {
+        throw Unsupported{"native uniform wide multiply mode"};
+    }
+    const auto high = [&](const IR::U32& value) {
+        return IR::U32{ir.ShiftRightLogical(value, ir.Imm32(16))};
+    };
+    const auto low = [&](const IR::U32& value) {
+        return IR::U32{ir.BitwiseAnd(value, ir.Imm32(0xffffU))};
+    };
+    const auto widen = [&](const IR::U32& value) {
+        return IR::U64{ir.PackUint2x32(ir.CompositeConstruct(value, ir.Imm32(0)))};
+    };
+    const IR::U64 product{ir.IAdd(
+        ir.IAdd(widen(IR::U32{ir.IMul(low(a), low(b))}),
+                IR::U64{ir.ShiftLeftLogical(
+                    widen(IR::U32{ir.IMul(low(a), high(b))}), ir.Imm32(16))}),
+        ir.IAdd(IR::U64{ir.ShiftLeftLogical(widen(IR::U32{ir.IMul(high(a), low(b))}),
+                                            ir.Imm32(16))},
+                IR::U64{ir.ShiftLeftLogical(widen(IR::U32{ir.IMul(high(a), high(b))}),
+                                            ir.Imm32(32))}))};
+    const IR::U64 pair = ir.PackUint2x32(ir.CompositeConstruct(
+        addend == 255 ? ir.Imm32(0) : Uniform(addend),
+        addend == 255 ? ir.Imm32(0) : Uniform(addend + 1)));
+    const IR::Value halves{ir.UnpackUint2x32(IR::U64{ir.IAdd(product, pair)})};
+    ir.SetReg(UniformRegister(target), IR::U32{ir.CompositeExtract(halves, 0)});
+    ir.SetReg(UniformRegister(target + 1), IR::U32{ir.CompositeExtract(halves, 1)});
+}
+
 void Translator::EmitShuffleRegister() {
     // SHFL with the lane in a register: the same shape as the immediate form.
     if ((current.words[2] & ~0x000e0000U) || current.Bits(53, 5) || current.Bits(60, 4) ||
@@ -1660,6 +1740,13 @@ void Translator::Emit() {
         return;
     case 0x803: // P2R
         EmitPredicateToRegister();
+        return;
+    case 0x305: // F2I (word form)
+        EmitFloatToInteger();
+        return;
+    case 0x2a4: // UIMAD with a uniform multiplier
+    case 0x2a5: // UIMAD.WIDE.U32 with a uniform multiplier
+        EmitUniformMultiplyAddRegister();
         return;
     case 0x217: // IMNMX (register)
     case 0x817: // IMNMX (immediate)

@@ -157,6 +157,12 @@ constexpr Instruction GlobalStore64{{0x27007986, 0x00000006, 0x0810ab0a, 0x0001e
 constexpr Instruction CopySpecialToPair{{0x00027805, 0x00000000, 0x0001ff00, 0x000fe200}};
 /// STL [RZ], R3
 constexpr Instruction StoreLocal{{0xff007387, 0x00000003, 0x00100800, 0x0001e800}};
+/// F2I.FTZ.U32.NTZ R13, R13
+constexpr Instruction FloatToInteger{{0x000d7305, 0x0000000d, 0x00213000, 0x000e2200}};
+/// UIMAD UR4, UR4, UR13, URZ
+constexpr Instruction UniformMultiplyAdd{{0x040472a4, 0x0000000d, 0x0f8e023f, 0x000fc800}};
+/// UIMAD.WIDE.U32 UR10, UR4, UR12, UR10
+constexpr Instruction UniformWideMultiplyAdd{{0x040a72a5, 0x0000000c, 0x0f8e000a, 0x000fc400}};
 
 } // Anonymous namespace
 
@@ -485,4 +491,24 @@ TEST_CASE("CS2R zero idiom and STL translate", "[video_core][native]") {
 
     const Translated local{StoreLocal};
     REQUIRE(local.Find(IR::Opcode::WriteLocal) != nullptr);
+}
+
+TEST_CASE("F2I truncates and clamps", "[video_core][native]") {
+    const Translated convert{FloatToInteger};
+    REQUIRE(convert.Find(IR::Opcode::FPTrunc32) != nullptr);
+    REQUIRE(convert.Find(IR::Opcode::FPClamp32) != nullptr);
+    REQUIRE(convert.Find(IR::Opcode::ConvertU32F32) != nullptr);
+    CHECK(convert.Find(IR::Opcode::SetRegister)->Arg(0).Reg() == IR::Reg::R13);
+}
+
+TEST_CASE("UIMAD multiplies uniform registers", "[video_core][native]") {
+    const Translated narrow{UniformMultiplyAdd};
+    REQUIRE(narrow.Find(IR::Opcode::IMul32) != nullptr);
+    REQUIRE(narrow.Find(IR::Opcode::IAdd32) != nullptr);
+    CHECK(static_cast<u32>(narrow.Find(IR::Opcode::SetRegister)->Arg(0).Reg()) == 512 + 4);
+
+    const Translated wide{UniformWideMultiplyAdd};
+    // Four 16-bit partial products, then the 64-bit addend pair.
+    CHECK(wide.Count(IR::Opcode::IMul32) == 4);
+    CHECK(wide.Count(IR::Opcode::SetRegister) == 2);
 }

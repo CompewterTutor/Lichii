@@ -51,7 +51,7 @@ never depends on the host GPU: "native" means the guest instruction set, not the
 
 ```sh
 build-sweep/bin/shader-sweep <program.bin> --stage compute --format instructions --native
-# {"phase":"native","implemented_opcodes":106,"control_blocks":91,"ir_instructions":1828,
+# {"phase":"native","implemented_opcodes":109,"control_blocks":91,"ir_instructions":1828,
 #  "status":"blocked","error":{"code":"structure_failed",
 #                              "message":"instruction 233 (0x3c4): unsupported native opcode 0x3c4"}}
 ```
@@ -69,12 +69,13 @@ time, each with a captured instruction and its nvdisasm decode.
 
 ### Where it stands
 
-The captured OoT compute program translates **14552 IR instructions across 106 opcodes**, stopping
-at instruction 233 (`REDUX.MAX`) with **37 blocked instruction instances left**. It has never been
+The captured OoT compute program translates **15075 IR instructions across 109 opcodes**, stopping
+at instruction 233 (`REDUX.MAX`) with **28 blocked instruction instances left**. It has never been
 compiled to SPIR-V yet.
 
-- What is left is concentrated in warp operations and atomics: `VOTE`/`VOTEU`, `REDUX`, `ATOMG`,
-  `REDG`, plus `F2I`/`F2IP`, `ULEA`, `UIADD3.X`, `UIMAD` and `LDC.U8`.
+- What is left needs more than field decoding: warp voting (`VOTE`/`VOTEU`), warp and memory
+  atomics (`REDUX`, `ATOMG`, `REDG`) all need the active-lane set or an atomic IR op, plus the
+  remaining uniform/address forms (`ULEA`, `UIADD3`/`UIADD3.X`, `LDC.U8`, `F2IP`).
 - Next: those families, then the first end-to-end compile (`spirv-val`), then `EDEN_NX2_NATIVE=1` on
   a real save for a screenshot A/B.
 - The `If` node a failed build leaves unfilled was a null-pointer trap for anything reading the
