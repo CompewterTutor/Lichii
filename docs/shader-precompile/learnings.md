@@ -1002,3 +1002,32 @@ translated end to end; the failures were concentrated in four gaps, not spread e
 - Result: **3115 of 4008** compute programs translate end to end (78%), up from 3. What is left is
   dominated by textures (`TLD` 0xb60/0xb66, `TXQ` 0xb6f/0xb63, 0xb97) and a handful of forms:
   indexed `LDC` modes, the remaining `IMAD` carry modes and `0x307`.
+
+## 2026-11-09 - First real compile: the structurer has no loops
+
+`shader-sweep <program> --native --output out.spv` now builds the whole program the way the pipeline
+cache does and runs it through the SPIR-V backend, so the structurer is exercised by a real compile
+instead of only counted. First result: **0 of 47 sampled translating programs pass `spirv-val`**.
+
+Two structural bugs were found and fixed on the way:
+
+- **Reused merge blocks.** `if (a) goto M; if (b) goto M;` makes M the merge of two headers, which
+  SPIR-V forbids. A block that is already a merge now gets a fresh single-branch block in front of
+  it (`UniqueMerge`).
+- **Third successors on terminated blocks.** The fallthrough branch was appended even when the
+  previous block already had its terminator, giving blocks three successors. Terminated blocks are
+  now tracked and never extended.
+
+With those fixed, every remaining failure is the same: `OpPhi's number of incoming blocks (2) does
+not match block's predecessor count (3)`. The cause is not the phis. Every translating program in
+the corpus contains exactly one **backward** `BRA` (a loop) and one `BSSY`, and the structurer only
+builds if/else diamonds: there is no `Loop`/`Repeat` node anywhere in `control_flow.cpp`. A back
+edge therefore produces a "diamond" whose body is empty and whose body entry is a node that was
+never created, which is where the phantom predecessor comes from.
+
+- The next step is loop structuring, and it should be built from the hardware's own regions rather
+  than inferred merges: `BSSY <target>` names a reconvergence point, `BSYNC` closes the region, so a
+  back edge to a region's entry is a loop whose merge is that reconvergence point. That gives the
+  `Loop`/`Repeat` shape the SPIR-V backend needs, with a real condition on the repeat edge.
+- `SHADER_SWEEP_IR=1` prints the block graph (order, successors, predecessors), which is how the
+  phantom predecessor was traced; it stays as a diagnostic, off by default.

@@ -77,7 +77,10 @@ Measured over all 4008 compute programs captured from Ocarina of Time: **3115 tr
 | `TLD` (0xb60, 0xb66), `TXQ` (0xb6f, 0xb63) and 0xb97 | ~575 |
 | indexed `LDC` modes, `IMAD` carry modes, `0x307`, `F2IP` | ~180 |
 
-- Nothing has been compiled to SPIR-V yet: the next milestone is one program through `spirv-val`,
+- `shader-sweep <program> --native --output out.spv` compiles the native translation to SPIR-V.
+  **Nothing validates yet**, and the reason is precise: the structurer builds if/else diamonds only,
+  while every program in the corpus contains a loop (one backward branch and one `BSSY`). The next
+  task is loop structuring from the `BSSY` reconvergence regions, then the first `spirv-val` pass,
   then `EDEN_NX2_NATIVE=1` on a real save for a screenshot A/B.
 - Next: those families, then the first end-to-end compile (`spirv-val`), then `EDEN_NX2_NATIVE=1` on
   a real save for a screenshot A/B.

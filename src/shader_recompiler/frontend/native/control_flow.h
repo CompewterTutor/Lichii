@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -85,13 +86,23 @@ private:
     [[nodiscard]] bool BuildImpl();
 
     [[nodiscard]] IR::Block* NewBlock();
-    static void BranchTo(IR::Block* from, IR::Block* to);
+    void BranchTo(IR::Block* from, IR::Block* to);
+    /// True once a block has its terminator, so a fallthrough does not add a third successor.
+    [[nodiscard]] bool Terminated(const IR::Block* block) const {
+        return terminated.contains(const_cast<IR::Block*>(block));
+    }
+    void Terminate(IR::Block* block) {
+        terminated.insert(block);
+    }
     void AppendBlockNode(IR::Block* block);
     void TranslateRange(IR::Block* block, u32 begin, u32 end);
     void EmitBreak(IR::Block* block, const IR::U1& cond, IR::Block* merge, IR::Block* skip);
     [[nodiscard]] IR::U1 ConditionValue(IR::Block& block, const ControlBlock& control);
     [[nodiscard]] u32 BlockContaining(u32 instruction) const;
     [[nodiscard]] IR::Block* EmitRange(u32 first, u32 last, IR::Block* merge);
+    /// SPIR-V allows a block to be the merge block of one header only. Two diamonds that converge on
+    /// the same block are such a case, so the second gets an empty block that branches to it.
+    [[nodiscard]] IR::Block* UniqueMerge(IR::Block* merge);
 
     Environment& env;
     std::span<const Ampere::Instruction> code;
@@ -107,6 +118,8 @@ private:
     std::string error;
     bool tolerant{};
     std::vector<Issue> issues;
+    std::set<IR::Block*> merge_blocks;
+    std::set<IR::Block*> terminated;
 };
 
 } // namespace Shader::Native

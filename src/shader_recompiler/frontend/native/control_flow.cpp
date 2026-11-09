@@ -225,6 +225,20 @@ u32 Structurer::BlockContaining(u32 instruction) const {
     return low == 0 ? 0 : low - 1;
 }
 
+IR::Block* Structurer::UniqueMerge(IR::Block* merge) {
+    if (merge == nullptr) {
+        return merge;
+    }
+    if (merge_blocks.insert(merge).second) {
+        return merge;
+    }
+    IR::Block* const trampoline = NewBlock();
+    BranchTo(trampoline, merge);
+    AppendBlockNode(trampoline);
+    merge_blocks.insert(trampoline);
+    return trampoline;
+}
+
 IR::Block* Structurer::EmitRange(u32 first, u32 last, IR::Block* merge) {
     IR::Block* current{};
     u32 index = first;
@@ -235,7 +249,7 @@ IR::Block* Structurer::EmitRange(u32 first, u32 last, IR::Block* merge) {
             AppendBlockNode(ir);
             appended[index] = true;
         }
-        if (current != nullptr) {
+        if (current != nullptr && !Terminated(current)) {
             BranchTo(current, ir);
         }
         TranslateRange(ir, block.begin, block.end);
@@ -259,6 +273,7 @@ IR::Block* Structurer::EmitRange(u32 first, u32 last, IR::Block* merge) {
             }
             IR::Block* skip = NewBlock();
             EmitBreak(ir, ConditionValue(*ir, block), return_block, skip);
+            Terminate(ir);
             AppendBlockNode(skip);
             current = skip;
             ++index;
@@ -303,7 +318,7 @@ IR::Block* Structurer::EmitRange(u32 first, u32 last, IR::Block* merge) {
                     }
                 }
             }
-            IR::Block* const diamond_merge = entries[merge_block];
+            IR::Block* const diamond_merge = UniqueMerge(entries[merge_block]);
 
             // Reserve the node with its final type now. A build that fails mid-diamond leaves this
             // entry unfilled, and an entry typed as Block with a null block makes a partial syntax
@@ -319,6 +334,7 @@ IR::Block* Structurer::EmitRange(u32 first, u32 last, IR::Block* merge) {
             const IR::U1 condition = emitter.ConditionRef(IR::U1{emitter.LogicalNot(taken)});
             BranchTo(ir, body_entry);
             BranchTo(ir, diamond_merge);
+            Terminate(ir);
 
             auto& if_node = syntax_list[if_index];
             if_node.type = IR::AbstractSyntaxNode::Type::If;
@@ -336,7 +352,7 @@ IR::Block* Structurer::EmitRange(u32 first, u32 last, IR::Block* merge) {
         }
         }
     }
-    if (current != nullptr) {
+    if (current != nullptr && !Terminated(current)) {
         BranchTo(current, merge);
     }
     return merge;

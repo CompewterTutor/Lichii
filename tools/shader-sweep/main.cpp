@@ -2,6 +2,8 @@
 
 #include <array>
 #include <bit>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -23,6 +25,7 @@
 
 #include "shader_recompiler/frontend/native/control_flow.h"
 #include "shader_recompiler/frontend/native/translate.h"
+#include "shader_recompiler/frontend/native/program.h"
 #include "shader_recompiler/frontend/native/translate_program.h"
 #include "shader_recompiler/frontend/ampere/program_address_map.h"
 #include "shader_recompiler/frontend/ampere/program_capture.h"
@@ -587,7 +590,7 @@ int main(int argc, char** argv) {
                 throw std::runtime_error("Unknown option " + arg);
         }
         if ((output.empty() && !native_report) || (native_report && input.empty()) ||
-            (native_report && !output.empty()) || (input.empty() && environment.empty()) ||
+            (input.empty() && environment.empty()) ||
             (environment.empty() != (version == 0)) || (lower_only && input.empty()) ||
             (capture_extent && input.empty())) {
             throw std::runtime_error("Invalid arguments; see --help");
@@ -711,6 +714,75 @@ int main(int argc, char** argv) {
                     diagnostic["status"] = "blocked";
                     diagnostic["error"] = {{"code", "structure_failed"},
                                            {"message", structurer.Error()}};
+                }
+                if (!output.empty()) {
+                    if (!structured) {
+                        throw MissingContext("Native translation failed, nothing to compile");
+                    }
+                    // Same settings the pipeline cache uses for a native program: build the whole
+                    // program and run it through the SPIR-V backend, so the structurer and the IR it
+                    // produces are exercised by a real compile rather than only counted.
+                    const auto key = pipeline_key.empty() ? std::vector<u8>{}
+                                                          : ReadFile(pipeline_key);
+                    auto runtime = Runtime(key, env.ShaderStage(), diagnostic["assumptions"]);
+                    Shader::ObjectPool<Shader::IR::Inst> program_inst_pool;
+                    Shader::ObjectPool<Shader::IR::Block> program_block_pool;
+                    Shader::HostTranslateInfo host{};
+                    host.support_float64 = true;
+                    host.support_float16 = true;
+                    host.support_int64 = true;
+                    host.support_conditional_barrier = true;
+                    host.support_viewport_index_layer = true;
+                    host.support_geometry_shader_passthrough = true;
+                    host.ApplyDescriptorLimitPolicy();
+                    auto program = Shader::Native::TranslateProgram(
+                        program_inst_pool, program_block_pool, env, native, host);
+                    if (std::getenv("SHADER_SWEEP_IR") != nullptr) {
+                        // Diagnostic: the block graph as the backend will see it, which is what the
+                        // SSA pass turns into phis. Off unless the variable is set.
+                        std::map<const Shader::IR::Block*, size_t> index;
+                        for (size_t i = 0; i < program.blocks.size(); ++i) {
+                            index.emplace(program.blocks[i], i);
+                        }
+                        for (size_t i = 0; i < program.blocks.size(); ++i) {
+                            const auto* block = program.blocks[i];
+                            std::string targets;
+                            for (const auto* successor : block->ImmSuccessors()) {
+                                const auto it = index.find(successor);
+                                targets += fmt::format(" {}", it == index.end() ? -1 : int(it->second));
+                            }
+                            std::string predecessors;
+                            for (const auto* predecessor : block->ImmPredecessors()) {
+                                const auto it = index.find(predecessor);
+                                predecessors +=
+                                    fmt::format(" {}", it == index.end() ? -1 : int(it->second));
+                            }
+                            std::fprintf(stderr, "block %zu order %u succ%s pred%s\n", i,
+                                         block->GetOrder(), targets.c_str(), predecessors.c_str());
+                        }
+                    }
+                    Shader::Profile profile{};
+                    profile.supported_spirv = 0x00010400;
+                    profile.unified_descriptor_binding = true;
+                    profile.min_ssbo_alignment = host.min_ssbo_alignment;
+                    profile.support_int64 = true;
+                    profile.support_int16 = true;
+                    profile.support_int8 = true;
+                    profile.support_vote = true;
+                    profile.support_shuffle_relative = true;
+                    profile.support_geometry_streams = true;
+                    profile.support_geometry_shader_passthrough = true;
+                    profile.support_viewport_index_layer_non_geometry = true;
+                    profile.support_multi_viewport = true;
+                    profile.max_user_clip_distances = 8;
+                    profile.max_subgroup_size = 32;
+                    profile.support_typeless_image_loads = true;
+                    Shader::Backend::Bindings bindings{};
+                    const auto spirv =
+                        Shader::Backend::SPIRV::EmitSPIRV(profile, runtime, program, bindings);
+                    WriteFile(output, spirv);
+                    diagnostic["phase"] = "output";
+                    diagnostic["spirv_words"] = spirv.size();
                 }
                 std::cout << diagnostic.dump() << '\n';
                 return structured ? 0 : 1;
