@@ -1575,6 +1575,364 @@ void Translator::EmitShuffleRegister() {
     WriteUint(result);
 }
 
+void Translator::EmitVote() {
+    // VOTE: the warp's ballot into a register plus a predicate result. Bits 72-73 pick ALL, ANY or
+    // EQ (whether every active lane matches this one), the input predicate is bits 87-90 and the
+    // output predicate bits 81-83, where 7 means discard.
+    if (current.words[1] != 0 || current.Bits(72, 2) > 2 || (current.words[2] & ~0x078e0300U) != 0) {
+        throw Unsupported{"native vote mode"};
+    }
+    const u32 input = current.Bits(87, 3);
+    const IR::U1 condition{input == 7 ? ir.Imm1(true)
+                                      : ir.GetPred(static_cast<IR::Pred>(input),
+                                                   current.Bits(90, 1) != 0)};
+    const u32 dest = current.Bits(16, 8);
+    if (dest == 63) {
+        throw Unsupported{"native vote destination"};
+    }
+    WriteUint(ir.SubgroupBallot(condition));
+    const u32 output = current.Bits(81, 3);
+    if (output != 7) {
+        ir.SetPred(static_cast<IR::Pred>(output), VoteResult(current.Bits(72, 2), condition));
+    }
+}
+
+void Translator::EmitUniformVote() {
+    // VOTEU: the same vote, but the ballot goes to a uniform register (63 means discard) and the
+    // result to a uniform predicate.
+    if (current.Bits(24, 8) != 0 || current.words[1] != 0 ||
+        (current.words[2] & ~0x078e0300U) != 0 || current.Bits(72, 2) > 2 ||
+        current.Bits(12, 4) != 7) {
+        throw Unsupported{"native uniform vote mode"};
+    }
+    const u32 input = current.Bits(87, 3);
+    const IR::U1 condition{input == 7 ? ir.Imm1(true)
+                                      : ir.GetPred(static_cast<IR::Pred>(input),
+                                                   current.Bits(90, 1) != 0)};
+    const u32 dest = current.Bits(16, 8);
+    if (dest != 63) {
+        if (dest >= NUM_UNIFORM_REGISTERS) {
+            throw Unsupported{"native uniform vote destination"};
+        }
+        ir.SetReg(UniformRegister(dest), ir.SubgroupBallot(condition));
+    }
+    const u32 output = current.Bits(81, 3);
+    if (output != 7) {
+        if (output >= NUM_UNIFORM_PREDICATES) {
+            throw Unsupported{"native uniform vote predicate"};
+        }
+        SetUniformPredicate(output, VoteResult(current.Bits(72, 2), condition));
+    }
+}
+
+IR::U1 Translator::VoteResult(u32 mode, const IR::U1& condition) {
+    switch (mode) {
+    case 0:
+        return ir.VoteAll(condition);
+    case 1:
+        return ir.VoteAny(condition);
+    case 2:
+        return ir.VoteEqual(condition);
+    default:
+        throw Unsupported{"native vote mode"};
+    }
+}
+
+void Translator::EmitGlobalReduction() {
+    // REDG: a reduction applied to global memory with no result. Type selects the element (0 unsigned
+    // 32-bit, 1 signed 32-bit, 3 float) and the operation in bits 87-89 is the same enumeration the
+    // Maxwell RED uses. The address is a register pair, or a uniform register pair when the register
+    // field is 255.
+    const u32 type = current.Bits(73, 3);
+    const u32 operation = current.Bits(87, 3);
+    const bool uniform_address = current.Bits(24, 8) == 255;
+    const u32 variable = 0x03800e00U | (uniform_address ? 0x3fU : 0U);
+    const u32 mode = uniform_address ? 0x0c10e100U : 0x0010e100U;
+    if ((current.words[2] & ~variable) != mode ||
+        (type != 0 && type != 1 && type != 3) || (type == 3 && operation != 0)) {
+        throw Unsupported{"native global reduction mode"};
+    }
+    const IR::U64 pointer = AtomicPointer(current.Bits(40, 24));
+    const IR::U32 value = Gpr(current.Bits(32, 8));
+    static_cast<void>(ApplyAtomic(type, operation, pointer, value, false));
+}
+
+void Translator::EmitGlobalAtomic() {
+    // ATOMG: the same operations as REDG, but the old value is returned into the destination
+    // register. 0x3a8 addresses through a register pair and 0x9a8 through a uniform register pair.
+    const u32 operation = current.Bits(87, 3);
+    const bool uniform_pointer = current.Bits(0, 12) == 0x9a8;
+    if (uniform_pointer ? ((current.words[2] & ~0x3fU) != 0x081ee140U ||
+                           current.Bits(24, 8) != 255)
+                        : ((current.words[2] & ~0x07800000U) != 0x001ee100U ||
+                           current.Bits(24, 8) >= 246)) {
+        throw Unsupported{"native global atomic mode"};
+    }
+    const IR::U64 pointer = AtomicPointer(current.Bits(40, 24));
+    const IR::U32 value = Gpr(current.Bits(32, 8));
+    WriteUint(IR::U32{ApplyAtomic(0, operation, pointer, value, true)});
+}
+
+IR::U64 Translator::AtomicPointer(u32 raw_offset) {
+    // A signed 20-bit byte offset added to the pair. 0x9a8 always addresses through a uniform pair,
+    // 0x98e and 0x3a8 through one when the register field is 255, and 0x3a8 through a GPR pair.
+    const u32 opcode = current.Bits(0, 12);
+    const bool uniform_pair = opcode == 0x9a8 || (opcode == 0x98e && current.Bits(24, 8) == 255);
+    const s32 offset = static_cast<s32>(raw_offset << 8) >> 8;
+    if (offset < -0x80000 || offset > 0x7ffff) {
+        throw Unsupported{"native global atomic offset"};
+    }
+    const IR::U64 step = OffsetU64(static_cast<u32>(offset), offset < 0);
+    if (uniform_pair) {
+        const u32 index = current.Bits(64, 6);
+        if (index + 1 >= NUM_UNIFORM_REGISTERS) {
+            throw Unsupported{"native global atomic address"};
+        }
+        const IR::U64 base = ir.PackUint2x32(
+            ir.CompositeConstruct(Uniform(index), Uniform(index + 1)));
+        return ir.IAdd(base, step);
+    }
+    const u32 index = current.Bits(24, 8);
+    if ((index % 2) != 0 || index + 1 >= 246) {
+        throw Unsupported{"native global atomic address"};
+    }
+    const IR::U64 base = ir.PackUint2x32(ir.CompositeConstruct(Gpr(index), Gpr(index + 1)));
+    return ir.IAdd(base, step);
+}
+
+IR::Value Translator::ApplyAtomic(u32 type, u32 operation, const IR::U64& pointer,
+                                  const IR::U32& value, bool) {
+    if (type == 3) {
+        const IR::F32 stored{ir.BitCast<IR::F32>(value)};
+        const IR::FpControl control{
+            .no_contraction = false,
+            .rounding = IR::FpRounding::RN,
+            .fmz_mode = IR::FmzMode::FTZ,
+        };
+        return ir.GlobalAtomicF32Add(pointer, stored, control);
+    }
+    const bool is_signed = type == 1;
+    switch (operation) {
+    case 0:
+        return ir.GlobalAtomicIAdd(pointer, value);
+    case 1:
+        return ir.GlobalAtomicIMin(pointer, value, is_signed);
+    case 2:
+        return ir.GlobalAtomicIMax(pointer, value, is_signed);
+    case 5:
+        return ir.GlobalAtomicAnd(pointer, value);
+    case 6:
+        return ir.GlobalAtomicOr(pointer, value);
+    case 7:
+        return ir.GlobalAtomicXor(pointer, value);
+    default:
+        throw Unsupported{"native global atomic operation"};
+    }
+}
+
+void Translator::EmitUniformAddThree() {
+    // UIADD3 over the uniform file. The plain form sums three uniform sources (or an immediate) and
+    // can write one or two carry predicates, which the 64-bit sum decides; the .X form adds two
+    // carry-in predicates instead. Both mirror the register IADD3 exactly.
+    const u32 target = current.Bits(16, 8);
+    const u32 opcode = current.Bits(0, 12);
+    if (target >= NUM_UNIFORM_REGISTERS) {
+        throw Unsupported{"native uniform add mode"};
+    }
+    const auto read = [&](u32 index) -> IR::U32 {
+        if (index == 63) {
+            return ir.Imm32(0);
+        }
+        if (index >= NUM_UNIFORM_REGISTERS) {
+            throw Unsupported{"native uniform add register"};
+        }
+        return Uniform(index);
+    };
+    const auto carry_in = [&](u32 field, u32 negate) -> IR::U32 {
+        const u32 index = current.Bits(field, 3);
+        const bool negated = current.Bits(negate, 1) != 0;
+        const IR::U1 condition{index == 7 ? ir.Imm1(!negated) : UniformPredicate(index)};
+        return IR::U32{ir.Select(condition, ir.Imm32(1), ir.Imm32(0))};
+    };
+    const IR::U32 a = read(current.Bits(24, 8));
+    const IR::U32 b{opcode == 0x890 ? ir.Imm32(current.words[1]) : read(current.Bits(32, 8))};
+    const IR::U32 c = read(current.Bits(64, 8));
+    // A uniform guard keeps the target's old value when the predicate is false.
+    const u32 guard = current.Bits(12, 4);
+    const auto guarded = [&](const IR::U32& value) -> IR::U32 {
+        if ((guard & 7) == 7) {
+            return value;
+        }
+        IR::U1 enabled = UniformPredicate(guard & 7);
+        if ((guard & 8) != 0) {
+            enabled = IR::U1{ir.LogicalNot(enabled)};
+        }
+        return IR::U32{ir.Select(enabled, value, Uniform(target))};
+    };
+
+    if (current.Bits(74, 1) != 0) {
+        // .X: the carry chain continues a previous add.
+        if (current.Bits(81, 6) != 0x3f) {
+            throw Unsupported{"native uniform add carry mode"};
+        }
+        const IR::U32 first = carry_in(77, 80);
+        const IR::U32 second = carry_in(87, 90);
+        const auto widen = [&](const IR::U32& value) {
+            return IR::U64{ir.PackUint2x32(ir.CompositeConstruct(value, ir.Imm32(0)))};
+        };
+        const IR::U64 sum{ir.IAdd(
+            IR::U64{ir.IAdd(IR::U64{ir.IAdd(widen(a), widen(b))}, widen(c))},
+            IR::U64{ir.IAdd(widen(first), widen(second))})};
+        const IR::Value halves{ir.UnpackUint2x32(sum)};
+        ir.SetReg(UniformRegister(target),
+                  guarded(IR::U32{ir.CompositeExtract(halves, 0)}));
+        return;
+    }
+
+    const auto widen = [&](const IR::U32& value) {
+        return IR::U64{ir.PackUint2x32(ir.CompositeConstruct(value, ir.Imm32(0)))};
+    };
+    const IR::U64 sum{ir.IAdd(IR::U64{ir.IAdd(widen(a), widen(b))}, widen(c))};
+    const IR::Value halves{ir.UnpackUint2x32(sum)};
+    ir.SetReg(UniformRegister(target), guarded(IR::U32{ir.CompositeExtract(halves, 0)}));
+    const auto carry_out = [&](u32 field, u32 threshold) {
+        const u32 destination = current.Bits(field, 3);
+        if (destination == 7) {
+            return;
+        }
+        if (destination >= NUM_UNIFORM_PREDICATES) {
+            throw Unsupported{"native uniform add carry destination"};
+        }
+        const IR::U32 high{ir.CompositeExtract(halves, 1)};
+        SetUniformPredicate(destination,
+                            IR::U1{ir.INotEqual(high, ir.Imm32(threshold))});
+    };
+    carry_out(81, 1);
+    carry_out(84, 2);
+}
+
+void Translator::EmitUniformEffectiveAddress() {
+    // ULEA: LEA over the uniform file - a scaled addend plus an immediate (0x891) or a uniform
+    // register (0x291), with an optional carry out. The shipping lowering accepts this shape without
+    // checking more than the high-word and carry-bit flags, and programs render correctly with it,
+    // so the same fields are used here.
+    const u32 target = current.Bits(16, 8);
+    const u32 shift = current.Bits(75, 5);
+    const bool register_addend = current.Bits(0, 12) == 0x291;
+    if (target >= NUM_UNIFORM_REGISTERS || current.Bits(80, 1) != 0 ||
+        current.Bits(74, 1) != 0 || current.Bits(91, 1) == 0) {
+        throw Unsupported{"native uniform effective address mode"};
+    }
+    const auto read = [&](u32 index) -> IR::U32 {
+        if (index == 63) {
+            return ir.Imm32(0);
+        }
+        if (index >= NUM_UNIFORM_REGISTERS) {
+            throw Unsupported{"native uniform effective address register"};
+        }
+        return Uniform(index);
+    };
+    const u32 addend = current.Bits(32, 8);
+    const IR::U32 a = read(current.Bits(24, 8));
+    const IR::U32 b{register_addend ? read(addend) : ir.Imm32(current.words[1])};
+    const IR::U64 wide_a{ir.PackUint2x32(ir.CompositeConstruct(a, ir.Imm32(0)))};
+    const IR::U64 sum{ir.IAdd(
+        IR::U64{ir.PackUint2x32(ir.CompositeConstruct(b, ir.Imm32(0)))},
+        IR::U64{ir.ShiftLeftLogical(wide_a, ir.Imm32(shift))})};
+    const IR::Value halves{ir.UnpackUint2x32(sum)};
+    ir.SetReg(UniformRegister(target), IR::U32{ir.CompositeExtract(halves, 0)});
+    const u32 carry = current.Bits(81, 3);
+    if (carry != 7) {
+        if (carry >= NUM_UNIFORM_PREDICATES) {
+            throw Unsupported{"native uniform effective address carry"};
+        }
+        SetUniformPredicate(
+            carry, IR::U1{ir.INotEqual(IR::U32{ir.CompositeExtract(halves, 1)}, ir.Imm32(0))});
+    }
+}
+
+void Translator::EmitIndexedConstantLoad() {
+    // LDC with an indexed byte offset: a byte or word out of a constant bank at register + offset.
+    // Mode 2 is the segmented form, where the register holds the flattened constant-buffer address
+    // and the bank moves into the high half.
+    const u32 width = current.Bits(73, 3);
+    const u32 mode_bits = current.Bits(78, 2);
+    const u32 bank = ConstantBufferBank(current.Bits(54, 5));
+    if (width > 4 || (mode_bits != 0 && mode_bits != 2) || bank >= 18 ||
+        (current.words[2] & ~0xce00U) != 0 || (current.words[1] & 0xf800003fU) != 0) {
+        throw Unsupported{"native indexed constant load mode"};
+    }
+    const IR::U32 offset = ir.IAdd(Gpr(current.Bits(24, 8)), ir.Imm32(current.Bits(38, 16)));
+    IR::U32 index = ir.Imm32(bank);
+    IR::U32 address = offset;
+    if (mode_bits == 2) {
+        index = IR::U32{ir.IAdd(ir.BitFieldExtract(offset, ir.Imm32(16), ir.Imm32(16)),
+                                ir.Imm32(bank))};
+        address = IR::U32{ir.BitFieldExtract(offset, ir.Imm32(0), ir.Imm32(16))};
+    }
+    switch (width) {
+    case 0:
+        WriteUint(IR::U32{ir.GetCbuf(index, address, 8, false)});
+        return;
+    case 1:
+        WriteUint(IR::U32{ir.GetCbuf(index, address, 8, true)});
+        return;
+    case 2:
+        WriteUint(IR::U32{ir.GetCbuf(index, address, 16, false)});
+        return;
+    case 3:
+        WriteUint(IR::U32{ir.GetCbuf(index, address, 16, true)});
+        return;
+    default:
+        WriteUint(IR::U32{ir.GetCbuf(index, address, 32, false)});
+        return;
+    }
+}
+
+void Translator::EmitWarpReduction() {
+    // REDUX: a reduction over the warp's active lanes into a uniform register. Inactive lanes
+    // contribute the identity (zero, or all ones for a minimum), which is what the shipping lowering
+    // does, and the butterfly reduction leaves every lane holding the same value.
+    const u32 operation = current.words[2] & ~0x200U;
+    const bool maximum = operation == 0x14000U;
+    const bool minimum = operation == 0x10000U;
+    const bool logical_or = current.words[2] == 0x4000U;
+    const bool logical_xor = current.words[2] == 0x8000U;
+    const bool signed_order = current.Bits(73, 1) != 0;
+    const u32 target = current.Bits(16, 8);
+    if (target >= NUM_UNIFORM_REGISTERS || current.words[1] != 0 ||
+        (current.words[2] != 0xc000U && !maximum && !minimum && !logical_or && !logical_xor) ||
+        (signed_order && !maximum && !minimum)) {
+        throw Unsupported{"native warp reduction mode"};
+    }
+    const IR::U32 active = ir.SubgroupBallot(ir.Imm1(true));
+    const IR::U32 own = ir.SubgroupEqMask();
+    const IR::U1 enabled{ir.INotEqual(IR::U32{ir.BitwiseAnd(active, own)}, ir.Imm32(0))};
+    const IR::U32 source = Gpr(current.Bits(24, 8));
+    IR::U32 value{ir.Select(enabled, source, ir.Imm32(minimum ? 0xffffffffU : 0))};
+    const auto combine = [&](const IR::U32& a, const IR::U32& b) -> IR::U32 {
+        if (logical_or) {
+            return IR::U32{ir.BitwiseOr(a, b)};
+        }
+        if (logical_xor) {
+            return IR::U32{ir.BitwiseXor(a, b)};
+        }
+        if (minimum) {
+            return signed_order ? IR::U32{ir.SMin(a, b)} : IR::U32{ir.UMin(a, b)};
+        }
+        if (maximum) {
+            return signed_order ? IR::U32{ir.SMax(a, b)} : IR::U32{ir.UMax(a, b)};
+        }
+        return IR::U32{ir.IAdd(a, b)};
+    };
+    for (u32 offset = 16; offset > 0; offset >>= 1) {
+        const IR::U32 other = ir.ShuffleButterfly(value, ir.Imm32(offset), ir.Imm32(31),
+                                                  ir.Imm32(0));
+        value = combine(value, other);
+    }
+    ir.SetReg(UniformRegister(target), value);
+}
+
 void Translator::EmitUniformConstantLoad() {
     // ULDC: a constant buffer word or pair into the uniform register file. The indexed form adds a
     // uniform register to the byte offset, in bytes: the Maxwell LDC it lowers to does exactly that
@@ -1741,6 +2099,33 @@ void Translator::Emit() {
     case 0x803: // P2R
         EmitPredicateToRegister();
         return;
+    case 0x806: // VOTE
+        EmitVote();
+        return;
+    case 0x886: // VOTEU
+        EmitUniformVote();
+        return;
+    case 0x98e: // REDG
+        EmitGlobalReduction();
+        return;
+    case 0x3a8: // ATOMG (register pair)
+    case 0x9a8: // ATOMG (uniform pair)
+        EmitGlobalAtomic();
+        return;
+    case 0x890: // UIADD3 (immediate)
+    case 0x290: // UIADD3 (register)
+        EmitUniformAddThree();
+        return;
+    case 0x891: // ULEA (immediate)
+    case 0x291: // ULEA (register)
+        EmitUniformEffectiveAddress();
+        return;
+    case 0xb82: // LDC with an indexed offset
+        EmitIndexedConstantLoad();
+        return;
+    case 0x3c4: // REDUX
+        EmitWarpReduction();
+        return;
     case 0x305: // F2I (word form)
         EmitFloatToInteger();
         return;
@@ -1810,9 +2195,6 @@ void Translator::Emit() {
     case 0x287: // USEL
     case 0x887: // USEL with an immediate
         EmitUniformSelect();
-        return;
-    case 0x890: // UIADD3 with an immediate
-        EmitUniformAdd();
         return;
     case 0x28c: // UISETP
     case 0x88c: // UISETP with an immediate

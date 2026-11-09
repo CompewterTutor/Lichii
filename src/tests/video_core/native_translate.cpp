@@ -163,6 +163,22 @@ constexpr Instruction FloatToInteger{{0x000d7305, 0x0000000d, 0x00213000, 0x000e
 constexpr Instruction UniformMultiplyAdd{{0x040472a4, 0x0000000d, 0x0f8e023f, 0x000fc800}};
 /// UIMAD.WIDE.U32 UR10, UR4, UR12, UR10
 constexpr Instruction UniformWideMultiplyAdd{{0x040a72a5, 0x0000000c, 0x0f8e000a, 0x000fc400}};
+/// VOTE.ALL R38, PT, PT
+constexpr Instruction Vote{{0x00267806, 0x00000000, 0x038e0000, 0x000fe200}};
+/// VOTEU.ANY UP4, P6
+constexpr Instruction UniformVote{{0x003f7886, 0x00000000, 0x03080100, 0x000fca00}};
+/// REDG.E.MAX.STRONG.GPU [R10+-0xc], R29
+constexpr Instruction GlobalReduction{{0x0a00798e, 0xfffff41d, 0x0110e100, 0x0001e400}};
+/// ATOMG.E.ADD.STRONG.GPU PT, R39, [R10], R29
+constexpr Instruction GlobalAtomic{{0x0a2773a8, 0x0000001d, 0x001ee100, 0x001ea200}};
+/// @UP3 UIADD3 UR4, UR15, -0x1, URZ
+constexpr Instruction UniformAddGuarded{{0x0f043890, 0xffffffff, 0x0fffe03f, 0x000fc800}};
+/// ULEA UR4, UR16, 0x82, 0x6
+constexpr Instruction UniformEffectiveAddress{{0x10043891, 0x00000082, 0x0f8e303f, 0x000fe200}};
+/// LDC.U8 R2, c[0x5][R2+0x7]
+constexpr Instruction IndexedConstantLoad{{0x02027b82, 0x014001c0, 0x00000000, 0x000e2200}};
+/// REDUX.MAX UR14, R21
+constexpr Instruction WarpReduction{{0x150e73c4, 0x00000000, 0x00014000, 0x000e2600}};
 
 } // Anonymous namespace
 
@@ -511,4 +527,60 @@ TEST_CASE("UIMAD multiplies uniform registers", "[video_core][native]") {
     // Four 16-bit partial products, then the 64-bit addend pair.
     CHECK(wide.Count(IR::Opcode::IMul32) == 4);
     CHECK(wide.Count(IR::Opcode::SetRegister) == 2);
+}
+
+TEST_CASE("VOTE and VOTEU vote across the warp", "[video_core][native]") {
+    // The captured VOTE discards its predicate result (bits 81-83 are PT), so only the ballot
+    // reaches the block; VOTEU below writes a result.
+    const Translated vote{Vote};
+    REQUIRE(vote.Find(IR::Opcode::SubgroupBallot) != nullptr);
+    CHECK(vote.Find(IR::Opcode::SetRegister)->Arg(0).Reg() == IR::Reg::R38);
+    CHECK(vote.Find(IR::Opcode::VoteAll) == nullptr);
+
+    const Translated uniform{UniformVote};
+    REQUIRE(uniform.Find(IR::Opcode::VoteAny) != nullptr);
+    // The vote result lands in uniform predicate UP4, which lives after the uniform registers.
+    bool wrote_predicate{};
+    for (const IR::Inst& inst : uniform.block) {
+        if (inst.GetOpcode() == IR::Opcode::SetRegister &&
+            static_cast<u32>(inst.Arg(0).Reg()) == 576 + 4) {
+            wrote_predicate = true;
+        }
+    }
+    CHECK(wrote_predicate);
+}
+
+TEST_CASE("REDG and ATOMG reach global memory", "[video_core][native]") {
+    const Translated reduction{GlobalReduction};
+    // MAX over unsigned words.
+    REQUIRE(reduction.Find(IR::Opcode::GlobalAtomicUMax32) != nullptr);
+    CHECK(reduction.Find(IR::Opcode::SetRegister) == nullptr);
+
+    const Translated atomic{GlobalAtomic};
+    REQUIRE(atomic.Find(IR::Opcode::GlobalAtomicIAdd32) != nullptr);
+    CHECK(atomic.Find(IR::Opcode::SetRegister)->Arg(0).Reg() == IR::Reg::R39);
+}
+
+TEST_CASE("UIADD3 and ULEA work on the uniform file", "[video_core][native]") {
+    const Translated add{UniformAddGuarded};
+    REQUIRE(add.Find(IR::Opcode::IAdd64) != nullptr);
+    CHECK(static_cast<u32>(add.Find(IR::Opcode::SetRegister)->Arg(0).Reg()) == 512 + 4);
+
+    const Translated address{UniformEffectiveAddress};
+    REQUIRE(address.Find(IR::Opcode::ShiftLeftLogical64) != nullptr);
+    CHECK(static_cast<u32>(address.Find(IR::Opcode::SetRegister)->Arg(0).Reg()) == 512 + 4);
+}
+
+TEST_CASE("LDC with an indexed offset reads a constant byte", "[video_core][native]") {
+    const Translated load{IndexedConstantLoad};
+    REQUIRE(load.Find(IR::Opcode::GetCbufU8) != nullptr);
+    CHECK(load.Find(IR::Opcode::SetRegister)->Arg(0).Reg() == IR::Reg::R2);
+}
+
+TEST_CASE("REDUX reduces the warp into a uniform register", "[video_core][native]") {
+    const Translated reduction{WarpReduction};
+    // Five butterfly steps cover the 32 lanes.
+    CHECK(reduction.Count(IR::Opcode::ShuffleButterfly) == 5);
+    REQUIRE(reduction.Find(IR::Opcode::UMax32) != nullptr);
+    CHECK(static_cast<u32>(reduction.Find(IR::Opcode::SetRegister)->Arg(0).Reg()) == 512 + 14);
 }

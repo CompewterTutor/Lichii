@@ -935,3 +935,34 @@ Numbers here come from two OoT sessions on the local machine (build `nx2-99ac3d5
 - Those three families share a requirement the rest of the port did not have: they need the warp's
   active-lane set (a ballot) or an atomic IR op, so they are the next real design step rather than
   more field decoding.
+
+## 2026-11-09 - Warp voting, atomics, uniform arithmetic: only F2IP is left
+
+- `VOTE`/`VOTEU` (0x806/0x886) are `SubgroupBallot` plus `VoteAll`/`VoteAny`/`VoteEqual` chosen by
+  bits 72-73; the captured VOTE discards its predicate result (output field is PT), so only a ballot
+  reaches the block, while VOTEU writes a uniform predicate. The "register" a VOTEU ballot would go
+  to is 63, which is URZ, i.e. discard.
+- `REDG`/`ATOMG` (0x98e, 0x3a8, 0x9a8) map straight onto the Maxwell `RED`/`ATOM` enumerations: the
+  type in bits 73-75 selects unsigned/signed 32-bit or float (0/1/3), and bits 87-89 are the
+  operation the `AtomOp` enum already uses (ADD 0, MIN 1, MAX 2, INC 3, DEC 4, AND 5, OR 6, XOR 7).
+  A REDG has no result, so the value-returning IR atomic is used and discarded - the memory effect
+  is the same. Addresses are register pairs or uniform pairs, with a signed 20-bit byte offset.
+- `UIADD3`/`ULEA` (0x890/0x290, 0x891/0x291) reuse the register forms' semantics over the uniform
+  file: the plain sum and its two carry outputs from the 64-bit intermediate, the `.X` chain adding
+  two carry-in predicates, and a uniform guard that keeps the old target value. For ULEA only the
+  flags the shipping lowering itself checks (`!74`, `!80`, carry field) are validated - whatever
+  else those words carry, programs render correctly with it ignored.
+- `LDC.U8` (0xb82) is the Maxwell LDC's own address shape: default mode is `bank + (register +
+  offset)`, mode 2 folds the register into a flat constant-buffer address whose high half is the
+  bank.
+- `REDUX` (0x3c4) becomes five `ShuffleButterfly` steps with the inactive lanes - taken from
+  `SubgroupBallot(true)` against this lane's `SubgroupEqMask` - replaced by the operation's identity
+  (zero, or all ones for a minimum), exactly as the shipping lowering does. Every lane ends with the
+  same value, which is what makes writing it to a uniform register valid.
+- Remaining: `F2IP` (0x243, two instances). Its mnemonic says `F2IP.U8.F32.NTZ` with four operands,
+  and the form in this program is **not** the one the lowering accepts (`words[2]` is 0x000004ff, the
+  lowering requires 0x0000c4ff, and its source register field is 40 rather than 255), so there is no
+  shipping behaviour to copy and no evidence for what the extra operands do. It stays refused rather
+  than guessed.
+- Coverage: 119 opcodes, 15374 IR instructions in the tolerant pass, and the strict pass now stops at
+  instruction 1575 of 1920.

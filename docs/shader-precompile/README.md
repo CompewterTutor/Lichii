@@ -51,9 +51,9 @@ never depends on the host GPU: "native" means the guest instruction set, not the
 
 ```sh
 build-sweep/bin/shader-sweep <program.bin> --stage compute --format instructions --native
-# {"phase":"native","implemented_opcodes":109,"control_blocks":91,"ir_instructions":1828,
+# {"phase":"native","implemented_opcodes":119,"control_blocks":91,"ir_instructions":12765,
 #  "status":"blocked","error":{"code":"structure_failed",
-#                              "message":"instruction 233 (0x3c4): unsupported native opcode 0x3c4"}}
+#                              "message":"instruction 1575 (0x243): unsupported native opcode 0x243"}}
 ```
 
 `--native-all` reports every blocked instruction in one pass instead of stopping at the first, which
@@ -69,13 +69,14 @@ time, each with a captured instruction and its nvdisasm decode.
 
 ### Where it stands
 
-The captured OoT compute program translates **15075 IR instructions across 109 opcodes**, stopping
-at instruction 233 (`REDUX.MAX`) with **28 blocked instruction instances left**. It has never been
-compiled to SPIR-V yet.
+The captured OoT compute program translates **15374 IR instructions across 119 opcodes**. The
+strict pass stops at instruction 1575 of 1920, at `F2IP`, which is the only opcode left refused. It
+has never been compiled to SPIR-V yet.
 
-- What is left needs more than field decoding: warp voting (`VOTE`/`VOTEU`), warp and memory
-  atomics (`REDUX`, `ATOMG`, `REDG`) all need the active-lane set or an atomic IR op, plus the
-  remaining uniform/address forms (`ULEA`, `UIADD3`/`UIADD3.X`, `LDC.U8`, `F2IP`).
+- `F2IP` (0x243) is refused because the form in this program is not the one the shipping lowering
+  accepts, so there is no known behaviour to copy and no evidence for what its extra operands do.
+- Next: that one opcode (or a different captured program without it), then the first end-to-end
+  compile (`spirv-val`), then `EDEN_NX2_NATIVE=1` on a real save for a screenshot A/B.
 - Next: those families, then the first end-to-end compile (`spirv-val`), then `EDEN_NX2_NATIVE=1` on
   a real save for a screenshot A/B.
 - The `If` node a failed build leaves unfilled was a null-pointer trap for anything reading the

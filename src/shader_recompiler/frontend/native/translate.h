@@ -93,6 +93,18 @@ private:
     void EmitCopySpecialToRegisterPair();
     void EmitShuffleRegister();
     void EmitFloatToInteger();
+    void EmitVote();
+    void EmitUniformVote();
+    [[nodiscard]] IR::U1 VoteResult(u32 mode, const IR::U1& condition);
+    void EmitGlobalReduction();
+    void EmitGlobalAtomic();
+    [[nodiscard]] IR::U64 AtomicPointer(u32 raw_offset);
+    [[nodiscard]] IR::Value ApplyAtomic(u32 type, u32 operation, const IR::U64& pointer,
+                                        const IR::U32& value, bool call);
+    void EmitUniformAddThree();
+    void EmitUniformEffectiveAddress();
+    void EmitIndexedConstantLoad();
+    void EmitWarpReduction();
     void EmitUniformMultiplyAddRegister();
     void EmitFloatMinMax();
     void EmitIntegerMinMax();
