@@ -54,7 +54,7 @@ Methods: `status`, `screenshot` (`save`, `inline`, `reject` for an A/B), `log_ta
 - Try a live experiment (screenshot, `reject_shaders` A/B, `capture_frame`, `log_tail`) before asking the owner for a new build or shortcut.
 - Use full 16-hex-digit hashes; shorter ones are refused.
 - Restore every hash you reject before you finish.
-- Never start or stop the emulator. If nothing listens, ask the owner to launch the game.
+- You may start and stop the emulator yourself.
 - Keep sessions light while the owner plays: one request at a time, no capture loops, `sampled` only when you need pass inputs.
 
 ## RenderDoc and the live server
