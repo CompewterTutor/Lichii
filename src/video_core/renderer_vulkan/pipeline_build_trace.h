@@ -45,4 +45,22 @@ inline void TracePipelineBuild(const char* phase, const char* kind, u64 key_hash
     std::fflush(file);
 }
 
+/// EDEN_NX2_PIPELINE_BUILD_TRACE also records which stage programs the native frontend built and
+/// which fell back, so a dangling pipeline BEGIN can be matched to the frontend that built it.
+inline void TraceNativeFrontend(u64 shader_hash, bool translated, const char* reason) {
+    static std::FILE* const file = [] {
+        const char* const path = std::getenv("EDEN_NX2_PIPELINE_BUILD_TRACE");
+        return path != nullptr && *path != '\0' ? std::fopen(path, "a") : nullptr;
+    }();
+    if (file == nullptr) {
+        return;
+    }
+    static std::mutex mutex;
+    std::scoped_lock lock{mutex};
+    std::fprintf(file, "NATIVE %016llx %s%s%s\n",
+                 static_cast<unsigned long long>(shader_hash), translated ? "translated" : "fell back",
+                 translated ? "" : ": ", translated ? "" : reason);
+    std::fflush(file);
+}
+
 } // namespace Vulkan

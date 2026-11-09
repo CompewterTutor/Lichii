@@ -612,6 +612,15 @@ void PatchMeshInstructions(std::vector<u32>& code, const EmitContext& ctx) {
                code[offset] == ((3U << 16) | static_cast<u32>(spv::Op::OpStore)) &&
                code[offset + 1] == pointer.value && code[offset + 2] == object.value;
     };
+    // A program with more than one epilogue (one per exit) writes one set-outputs marker per
+    // epilogue, each with its own primitive-count id. The vertex count is the same constant in all
+    // of them and a store through a constant is never valid SPIR-V, so the pointer alone identifies
+    // every marker; matching the count too would leave all but the last one unpatched.
+    const auto store_to = [&](size_t offset, Id pointer) {
+        return offset + 2 < code.size() &&
+               code[offset] == ((3U << 16) | static_cast<u32>(spv::Op::OpStore)) &&
+               code[offset + 1] == pointer.value;
+    };
     const auto& tasks{ctx.mesh_tasks_marker};
     size_t offset = 5;
     bool patched{};
@@ -620,8 +629,7 @@ void PatchMeshInstructions(std::vector<u32>& code, const EmitContext& ctx) {
         if (word_count == 0) {
             break;
         }
-        if (set_outputs &&
-            store_at(offset, ctx.mesh_outputs_marker[0], ctx.mesh_outputs_marker[1])) {
+        if (set_outputs && store_to(offset, ctx.mesh_outputs_marker[0])) {
             code[offset] = (3U << 16) | static_cast<u32>(spv::Op::OpSetMeshOutputsEXT);
             patched = true;
         } else if (emit_tasks && store_at(offset, tasks[0], tasks[1]) &&

@@ -47,7 +47,7 @@ constexpr std::array StageNames{"vertex",  "tess-control", "tess-eval", "geometr
                                 "compute", "vertex-a",     "task",      "mesh"};
 
 Stage ParseStage(std::string_view name) {
-    for (size_t i = 0; i < 6; ++i) {
+    for (size_t i = 0; i < StageNames.size(); ++i) {
         if (name == StageNames[i])
             return static_cast<Stage>(i);
     }

@@ -6,6 +6,15 @@ New entries go under `## [Unreleased]`; `tools/ci/bump-version.sh` turns them in
 
 ## [Unreleased]
 
+### Fixed
+
+- Mesh programs with more than one exit built invalid SPIR-V: only one of the mesh set-outputs
+  markers was rewritten and the others remained stores through a constant, which the driver rejects
+  and can crash on. Every marker is rewritten now.
+- Native shader translation (opt-in, EDEN_NX2_NATIVE) handles ALD, IPA and ISBERD/ISBEWR,
+  writes fragment color at the exit the way the hardware does, and swaps FMNMX/IMNMX results for
+  the inverted-predicate form instead of negating the predicate.
+
 ### Added
 
 - Per-title pipeline key lists: every pipeline the title builds is recorded as a row of shader

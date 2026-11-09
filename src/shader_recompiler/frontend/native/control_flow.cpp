@@ -34,6 +34,49 @@ Structurer::Structurer(Environment& env_, std::span<const Ampere::Instruction> c
                        ObjectPool<IR::Inst>& inst_pool_, ObjectPool<IR::Block>& block_pool_)
     : env{env_}, code{code_}, inst_pool{inst_pool_}, block_pool{block_pool_} {}
 
+bool ReferencesBlock(const IR::AbstractSyntaxList& syntax_list, const IR::Block* block) {
+    using Type = IR::AbstractSyntaxNode::Type;
+    for (const IR::AbstractSyntaxNode& node : syntax_list) {
+        switch (node.type) {
+        case Type::Block:
+            if (node.data.block == block) {
+                return true;
+            }
+            break;
+        case Type::If:
+            if (node.data.if_node.body == block || node.data.if_node.merge == block) {
+                return true;
+            }
+            break;
+        case Type::EndIf:
+            if (node.data.end_if.merge == block) {
+                return true;
+            }
+            break;
+        case Type::Loop:
+            if (node.data.loop.body == block || node.data.loop.continue_block == block ||
+                node.data.loop.merge == block) {
+                return true;
+            }
+            break;
+        case Type::Repeat:
+            if (node.data.repeat.loop_header == block || node.data.repeat.merge == block) {
+                return true;
+            }
+            break;
+        case Type::Break:
+            if (node.data.break_node.merge == block || node.data.break_node.skip == block) {
+                return true;
+            }
+            break;
+        case Type::Return:
+        case Type::Unreachable:
+            break;
+        }
+    }
+    return false;
+}
+
 IR::Block* Structurer::NewBlock() {
     return block_pool.Create(inst_pool);
 }
@@ -101,9 +144,37 @@ void Structurer::TranslateRange(IR::Block* block, u32 begin, u32 end) {
     }
 }
 
+void Structurer::EmitFragmentExit(IR::Block& block) {
+    if (env.ShaderStage() != Stage::Fragment) {
+        return;
+    }
+    // The Maxwell frontend's EXIT does this for every fragment program: NVN2 leaves the color in
+    // R0 and up and the pixel shader header says which render target and components those registers
+    // belong to. Without it a native fragment program writes no color at all.
+    IR::IREmitter ir{block};
+    const ProgramHeader& sph{env.SPH()};
+    IR::Reg source{IR::Reg::R0};
+    for (u32 render_target = 0; render_target < 8; ++render_target) {
+        if (!sph.ps.HasOutputComponents(render_target)) {
+            continue;
+        }
+        const std::array<bool, 4> mask{sph.ps.EnabledOutputComponents(render_target)};
+        for (u32 component = 0; component < 4; ++component) {
+            if (!mask[component]) {
+                ++source;
+                continue;
+            }
+            ir.SetFragColor(render_target, component, ir.BitCast<IR::F32>(ir.GetReg(source)));
+            ++source;
+        }
+    }
+    if (sph.ps.omap.sample_mask != 0) {
+        ir.SetSampleMask(ir.GetReg(source));
+    }
+}
+
 void Structurer::EmitBreak(IR::Block* block, const IR::U1& cond, IR::Block* merge,
-                           IR::Block* skip) {
-    block->AddBranch(merge);
+                           IR::Block* skip) {    block->AddBranch(merge);
     block->AddBranch(skip);
     IR::IREmitter emitter{*block};
     auto& node = syntax_list.emplace_back();
@@ -341,6 +412,12 @@ IR::Block* Structurer::EmitRange(u32 first, u32 last, IR::Block* merge) {
                 throw UnsupportedInstruction{};
             }
             const IR::U1 repeat_condition{IR::IREmitter{*ir}.ConditionRef(condition)};
+            // The Repeat node emits a conditional branch to the header and to the merge, so the
+            // latch's IR successors must be the same two blocks. Without them the merge has no
+            // predecessor and a pass is free to drop it while the syntax list still names it.
+            BranchTo(ir, loops.back().header);
+            BranchTo(ir, loops.back().merge);
+            Terminate(ir);
             auto& repeat = syntax_list.emplace_back();
             repeat.type = IR::AbstractSyntaxNode::Type::Repeat;
             repeat.data.repeat.cond = repeat_condition;
@@ -361,6 +438,7 @@ IR::Block* Structurer::EmitRange(u32 first, u32 last, IR::Block* merge) {
             const auto [extra_pred, extra_negated] = block.extra.GetPred();
             if (pred == IR::Pred::PT && !negated && extra_pred == IR::Pred::PT) {
                 // An unconditional exit ends the program here.
+                EmitFragmentExit(*ir);
                 EmitReturn(ir);
                 return nullptr;
             }
@@ -368,6 +446,7 @@ IR::Block* Structurer::EmitRange(u32 first, u32 last, IR::Block* merge) {
             // the return block is not structured, so the return is a block inside it.
             IR::Block* const return_here = NewBlock();
             IR::IREmitter{*return_here}.Epilogue();
+            EmitFragmentExit(*return_here);
             IR::Block* const skip = NewBlock();
             IR::IREmitter emitter{*ir};
             const IR::U1 condition = emitter.ConditionRef(ConditionValue(*ir, block));
@@ -398,6 +477,7 @@ IR::Block* Structurer::EmitRange(u32 first, u32 last, IR::Block* merge) {
         case ControlBlock::End::Branch: {
             if (block.target == block.terminator) {
                 // A computed jump closes the program with a branch to itself.
+                EmitFragmentExit(*ir);
                 EmitReturn(ir);
                 return nullptr;
             }
@@ -479,7 +559,11 @@ bool Structurer::BuildImpl() {
     // A program that ends with an unconditional exit has already emitted its own epilogue; adding
     // another one would leave a block with no predecessor, which the SSA pass removes while the
     // syntax list keeps it.
-    if (EmitRange(0, static_cast<u32>(blocks.size()), return_block) != nullptr) {
+    //
+    // A loop or conditional exit can name the return block as its merge and end the range, in which
+    // case EmitRange returns null but the merge still needs a label and an epilogue.
+    IR::Block* const emitted = EmitRange(0, static_cast<u32>(blocks.size()), return_block);
+    if (emitted != nullptr || ReferencesBlock(syntax_list, return_block)) {
         AppendBlockNode(return_block);
         syntax_list.emplace_back().type = IR::AbstractSyntaxNode::Type::Return;
     }

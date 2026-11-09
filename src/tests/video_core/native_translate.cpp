@@ -59,6 +59,10 @@ public:
         return std::nullopt;
     }
     void Dump(u64, u64) override {}
+
+    void SetStage(Shader::Stage value) {
+        stage = value;
+    }
 };
 
 struct Translated {
@@ -69,7 +73,9 @@ struct Translated {
 
     Translated() = default;
 
-    explicit Translated(const Instruction& instruction) {
+    explicit Translated(const Instruction& instruction,
+                        Shader::Stage stage = Shader::Stage::VertexB) {
+        env.SetStage(stage);
         REQUIRE(translator.Translate(instruction));
     }
 
@@ -135,6 +141,8 @@ constexpr Instruction Select{{0xff267807, 0x00000001, 0x01800000, 0x000fc800}};
 constexpr Instruction FloatSelect{{0x2a2a7808, 0x3f666666, 0x03000000, 0x000fe400}};
 /// FMNMX.FTZ R11, R11, 30, PT
 constexpr Instruction FloatMinMaxImmediate{{0x0b0b7809, 0x41f00000, 0x03810000, 0x000fe200}};
+/// FMNMX R1, R6, R7 with bits 87-90 = 0xf: PT plus the min/max swap bit
+constexpr Instruction FloatMinMaxSwapped{{0x06017209, 0x40000007, 0x07810200, 0x000fc800}};
 /// IMNMX.U32 R29, R30, R29, PT
 constexpr Instruction IntegerMinMax{{0x1e1d7217, 0x0000001d, 0x03800000, 0x004fc800}};
 /// IMNMX.U32 R33, R17, 0xa000, PT
@@ -209,6 +217,20 @@ constexpr Instruction HighMultiply{{0x1f0b7827, 0xb21642c9, 0x078e00ff, 0x040fe2
 constexpr Instruction MultiplyConstantBuffer{{0x01037a24, 0x00c00700, 0x078e02ff, 0x000fc800}};
 /// IMNMX R7, R6, c[0x0][0x18], PT
 constexpr Instruction IntegerMinMaxBuffer{{0x06077a17, 0x00000600, 0x03800200, 0x000fe200}};
+/// ALD.96 R0, a[0x80]
+constexpr Instruction AttributeLoad{{0xff007321, 0x000080ff, 0x00000800, 0x000e2200}};
+/// ALD R12, a[0x140]
+constexpr Instruction AttributeLoadSingle{{0xff0c7321, 0x000140ff, 0x00000000, 0x000e6200}};
+/// IPA.PASS R38, a[0x7c]
+constexpr Instruction InterpolatePositionW{{0x00267326, 0x000000ff, 0x000e001f, 0x040e0200}};
+/// IPA.PASS R1, a[0xd0]
+constexpr Instruction InterpolateGeneric{{0x00017326, 0x000000ff, 0x000e0034, 0x000fe200}};
+/// ISBERD.ATTR.32 R2, [RZ]
+constexpr Instruction StageBufferRead{{0xff027923, 0x00000000, 0x00003800, 0x000e2800}};
+/// ISBEWR.O.32 [0x3], R5
+constexpr Instruction StageBufferMapWrite{{0xff008927, 0x00000305, 0x00008800, 0x0001e200}};
+/// ISBEWR.O.ATTR.32 [R42+0x380], R53
+constexpr Instruction StageBufferAttributeWrite{{0x2a007927, 0x00038035, 0x0000f800, 0x000fe800}};
 
 } // Anonymous namespace
 
@@ -456,6 +478,20 @@ TEST_CASE("POPC, SEL and FSEL translate", "[video_core][native]") {
 
     const Translated floating{FloatSelect};
     REQUIRE(floating.Find(IR::Opcode::SelectF32) != nullptr);
+}
+
+TEST_CASE("FMNMX swap bit selects the maximum", "[video_core][native]") {
+    // The negation bit that makes the lowered Maxwell instruction a maximum swaps the two results;
+    // it does not negate the predicate. Getting this backwards turns the cube-map coordinate
+    // normalisation into a minimum, and the sky and terrain render black.
+    const Translated minmax{FloatMinMaxSwapped};
+    const IR::Inst* select = minmax.Find(IR::Opcode::SelectF32);
+    REQUIRE(select != nullptr);
+    const IR::Inst* maximum = minmax.Find(IR::Opcode::FPMax32);
+    REQUIRE(maximum != nullptr);
+    CHECK(minmax.Count(IR::Opcode::FPMin32) == 1);
+    CHECK(select->Arg(1).Inst() == maximum);
+    CHECK(minmax.Find(IR::Opcode::SetRegister)->Arg(0).Reg() == IR::Reg::R1);
 }
 
 TEST_CASE("FMNMX and IMNMX translate", "[video_core][native]") {
@@ -709,4 +745,76 @@ TEST_CASE("UBREV reverses a uniform register", "[video_core][native]") {
     const Translated reverse{UniformBitReverse};
     REQUIRE(reverse.Find(IR::Opcode::BitReverse32) != nullptr);
     CHECK(static_cast<u32>(reverse.Find(IR::Opcode::SetRegister)->Arg(0).Reg()) == 512 + 4);
+}
+
+TEST_CASE("ALD loads consecutive attributes into consecutive registers", "[video_core][native]") {
+    const Translated wide{AttributeLoad};
+    REQUIRE(wide.Count(IR::Opcode::GetAttribute) == 3);
+    std::array<IR::Attribute, 3> attributes{};
+    std::array<IR::Reg, 3> registers{};
+    size_t index{};
+    for (const IR::Inst& inst : wide.block) {
+        if (inst.GetOpcode() == IR::Opcode::GetAttribute) {
+            attributes[index] = inst.Arg(0).Attribute();
+            ++index;
+        }
+    }
+    CHECK(attributes[0] == IR::Attribute::Generic0X);
+    CHECK(attributes[2] == IR::Attribute::Generic0Z);
+    index = 0;
+    for (const IR::Inst& inst : wide.block) {
+        if (inst.GetOpcode() == IR::Opcode::SetRegister) {
+            registers[index] = inst.Arg(0).Reg();
+            ++index;
+        }
+    }
+    REQUIRE(index == 3);
+    CHECK(registers[0] == IR::Reg::R0);
+    CHECK(registers[2] == IR::Reg::R2);
+
+    const Translated single{AttributeLoadSingle};
+    REQUIRE(single.Count(IR::Opcode::GetAttribute) == 1);
+    CHECK(single.Find(IR::Opcode::GetAttribute)->Arg(0).Attribute() ==
+          IR::Attribute::Generic12X);
+    CHECK(single.Find(IR::Opcode::SetRegister)->Arg(0).Reg() == IR::Reg::R12);
+}
+
+TEST_CASE("IPA reads a varying and applies perspective", "[video_core][native]") {
+    // PositionW is not generic, so it is read as is.
+    const Translated position{InterpolatePositionW};
+    REQUIRE(position.Count(IR::Opcode::GetAttribute) == 1);
+    CHECK(position.Find(IR::Opcode::GetAttribute)->Arg(0).Attribute() ==
+          IR::Attribute::PositionW);
+    CHECK(position.Count(IR::Opcode::FPMul32) == 0);
+    CHECK(position.Find(IR::Opcode::SetRegister)->Arg(0).Reg() == IR::Reg::R38);
+
+    // An unused input map entry still means perspective, so the value is scaled by PositionW.
+    const Translated generic{InterpolateGeneric};
+    REQUIRE(generic.Count(IR::Opcode::FPMul32) == 1);
+    bool read_position_w{};
+    for (const IR::Inst& inst : generic.block) {
+        if (inst.GetOpcode() == IR::Opcode::GetAttribute) {
+            read_position_w |= inst.Arg(0).Attribute() == IR::Attribute::PositionW;
+        }
+    }
+    CHECK(read_position_w);
+    CHECK(generic.Find(IR::Opcode::SetRegister)->Arg(0).Reg() == IR::Reg::R1);
+}
+
+TEST_CASE("ISBERD and ISBEWR reach the stage buffer", "[video_core][native]") {
+    const Translated read{StageBufferRead, Shader::Stage::Mesh};
+    REQUIRE(read.Find(IR::Opcode::IsbeRead) != nullptr);
+    CHECK(read.Find(IR::Opcode::SetRegister)->Arg(0).Reg() == IR::Reg::R2);
+
+    const Translated map_write{StageBufferMapWrite, Shader::Stage::Task};
+    REQUIRE(map_write.Find(IR::Opcode::IsbeWriteMapU32) != nullptr);
+    CHECK(map_write.Count(IR::Opcode::IsbeWriteMapU8) == 0);
+
+    const Translated attribute_write{StageBufferAttributeWrite, Shader::Stage::Mesh};
+    REQUIRE(attribute_write.Find(IR::Opcode::IsbeWriteAttribute) != nullptr);
+
+    // A stage buffer access is only meaningful in a task or mesh program.
+    Translated wrong_stage;
+    CHECK_FALSE(wrong_stage.translator.Translate(StageBufferRead));
+    CHECK(wrong_stage.translator.Error().find("task and mesh") != std::string_view::npos);
 }

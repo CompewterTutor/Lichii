@@ -3,6 +3,8 @@
 
 #include "shader_recompiler/frontend/native/program.h"
 
+#include <array>
+#include <set>
 #include <stdexcept>
 #include <string>
 
@@ -27,6 +29,55 @@ IR::BlockList GenerateBlocks(const IR::AbstractSyntaxList& syntax_list) {
     return blocks;
 }
 
+/// Every block a syntax node names must also appear as a block node: the SPIR-V backend labels only
+/// the emitted blocks, so a merge, branch target or loop header that is missing would be emitted
+/// with an unset label and take the process down. The structurer is supposed to keep this invariant;
+/// check it here so an oversight falls back to the lowering instead of crashing.
+void ValidateSyntax(const IR::AbstractSyntaxList& syntax_list, const IR::BlockList& blocks) {
+    std::set<const IR::Block*> emitted;
+    for (const IR::Block* block : blocks) {
+        emitted.insert(block);
+    }
+    using Type = IR::AbstractSyntaxNode::Type;
+    for (const IR::AbstractSyntaxNode& node : syntax_list) {
+        std::array<const IR::Block*, 3> referenced{};
+        size_t count{};
+        switch (node.type) {
+        case Type::Block:
+            break;
+        case Type::If:
+            referenced[count++] = node.data.if_node.body;
+            referenced[count++] = node.data.if_node.merge;
+            break;
+        case Type::EndIf:
+            referenced[count++] = node.data.end_if.merge;
+            break;
+        case Type::Loop:
+            referenced[count++] = node.data.loop.body;
+            referenced[count++] = node.data.loop.continue_block;
+            referenced[count++] = node.data.loop.merge;
+            break;
+        case Type::Repeat:
+            referenced[count++] = node.data.repeat.loop_header;
+            referenced[count++] = node.data.repeat.merge;
+            break;
+        case Type::Break:
+            referenced[count++] = node.data.break_node.merge;
+            referenced[count++] = node.data.break_node.skip;
+            break;
+        case Type::Return:
+        case Type::Unreachable:
+            break;
+        }
+        for (size_t index = 0; index < count; ++index) {
+            if (referenced[index] != nullptr && !emitted.contains(referenced[index])) {
+                throw NotImplementedException(
+                    "Native frontend: the syntax list names a block that is never emitted");
+            }
+        }
+    }
+}
+
 } // Anonymous namespace
 
 IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Block>& block_pool,
@@ -43,6 +94,7 @@ IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Blo
     if (program.syntax_list.empty()) {
         throw NotImplementedException("Native frontend produced no syntax");
     }
+    ValidateSyntax(program.syntax_list, program.blocks);
     program.post_order_blocks = PostOrder(program.syntax_list.front());
 
     Maxwell::FinalizeProgram(program, env, host_info);

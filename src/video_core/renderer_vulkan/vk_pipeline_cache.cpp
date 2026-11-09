@@ -37,6 +37,7 @@
 #include "video_core/renderer_vulkan/async_draw_policy.h"
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
+#include "video_core/renderer_vulkan/pipeline_build_trace.h"
 #include "video_core/renderer_vulkan/pipeline_helper.h"
 #include "video_core/renderer_vulkan/pipeline_statistics.h"
 #include "video_core/renderer_vulkan/vertex_repack.h"
@@ -76,6 +77,25 @@ namespace {
 [[nodiscard]] bool NativeFrontendEnabled() {
     static const bool enabled{std::getenv("EDEN_NX2_NATIVE") != nullptr};
     return enabled;
+}
+
+/// EDEN_NX2_NATIVE_STAGES=<list>: restrict the native frontend to the named stages while the
+/// graphics path is being brought up. Names are the shader-sweep stage names.
+[[nodiscard]] bool NativeStageEnabled(Shader::Stage stage) {
+    static const std::string stages = [] {
+        const char* const text = std::getenv("EDEN_NX2_NATIVE_STAGES");
+        return text != nullptr ? std::string{","} + text + "," : std::string{};
+    }();
+    if (stages.empty()) {
+        // Compute and fragment are validated against the lowering image for image. The vertex and
+        // mesh paths still shade some meshes too dark, so they need EDEN_NX2_NATIVE_STAGES.
+        return stage == Shader::Stage::Compute || stage == Shader::Stage::Fragment;
+    }
+    static constexpr std::array names{"vertex",         "tess-control", "tess-eval", "geometry",
+                                      "fragment",       "compute",      "vertex-a",  "task",
+                                      "mesh"};
+    const std::string token{"," + std::string{names[static_cast<size_t>(stage)]} + ","};
+    return stages.find(token) != std::string::npos;
 }
 
 } // Anonymous namespace
@@ -1468,14 +1488,30 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
 
         const u32 cfg_offset{static_cast<u32>(env.StartAddress() + sizeof(Shader::ProgramHeader))};
         Shader::Maxwell::Flow::CFG cfg(env, pools.flow_block, cfg_offset, index == 0);
-        if (NativeFrontendEnabled() && !env.NativeInstructions().empty() &&
-            (!uses_vertex_a || index != 1)) {
+        if (NativeFrontendEnabled() && NativeStageEnabled(env.ShaderStage()) &&
+            !env.NativeInstructions().empty() && (!uses_vertex_a || index != 1)) {
             try {
                 programs[index] = Shader::Native::TranslateProgram(
                     pools.inst, pools.block, env, env.NativeInstructions(), host_info);
+                Vulkan::TraceNativeFrontend(key.unique_hashes[index], true, "");
+                if (const char* dump_dir = std::getenv("EDEN_NX2_SPIRV_DUMP"); dump_dir != nullptr) {
+                    // The captured NVN2 stream next to the SPIR-V this run emits, so a native
+                    // program can be replayed through shader-sweep without the game.
+                    std::filesystem::create_directories(dump_dir);
+                    std::ofstream native_dump{
+                        std::filesystem::path{dump_dir} /
+                            fmt::format("{:016x}_native.bin", key.unique_hashes[index]),
+                        std::ios::binary};
+                    native_dump.write(
+                        reinterpret_cast<const char*>(env.NativeInstructions().data()),
+                        static_cast<std::streamsize>(env.NativeInstructions().size() *
+                                                     sizeof(Shader::Ampere::Instruction)));
+                }
                 LOG_INFO(Render_Vulkan, "Native frontend: {:#x} translated",
                          key.unique_hashes[index]);
             } catch (const std::exception& exception) {
+                Vulkan::TraceNativeFrontend(key.unique_hashes[index], false,
+                                            exception.what());
                 LOG_INFO(Render_Vulkan, "Native frontend: {:#x} fell back ({})",
                          key.unique_hashes[index], exception.what());
                 programs[index] = TranslateProgram(pools.inst, pools.block, env, cfg, host_info);
@@ -1579,6 +1615,21 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
                 GPU::Logging::DumpSpirvShader(key.unique_hashes[index],
                                               std::span<const u32>(code.data(), code.size()));
             }
+        }
+        if (const char* dump_dir = std::getenv("EDEN_NX2_SPIRV_DUMP"); dump_dir != nullptr) {
+            // Every graphics stage's SPIR-V, whatever frontend built it, named by program hash.
+            static constexpr std::array dump_stage_names{"vertex", "tess_control", "tess_eval",
+                                                         "geometry", "fragment"};
+            static std::once_flag dump_dir_flag;
+            std::call_once(dump_dir_flag, [&] {
+                std::filesystem::create_directories(dump_dir);
+            });
+            std::ofstream dump{std::filesystem::path{dump_dir} /
+                                   fmt::format("{:016x}_{}.spv", key.unique_hashes[index],
+                                               dump_stage_names[stage_index]),
+                               std::ios::binary};
+            dump.write(reinterpret_cast<const char*>(code.data()),
+                       static_cast<std::streamsize>(code.size() * sizeof(u32)));
         }
 
         if (device.HasDebuggingToolAttached()) {

@@ -90,9 +90,16 @@ Measured over all 4008 compute programs captured from Ocarina of Time: **3564 tr
 
 ## Live status
 
-- A/B on Ocarina of Time (Kokiri Forest save) done through the debug server. With a warm pipeline
-  cache, 1294 programs reach the native frontend and 127 translate; everything else falls back at
-  `ALD` (0x321) or `IPA` (0x326), so no graphics shader translates yet.
+- A/B on Ocarina of Time (Kokiri Forest save) done through the debug server. `ALD`, `IPA` and
+  `ISBERD`/`ISBEWR` translate now: 1,200 native attempts, 42 distinct graphics programs built
+  natively, the image matching the lowering within temporal noise for compute and fragment.
+- Still blocked for graphics: `AST` 0x322 (~402 fallbacks), `FRAG` 0x95b (~171), extended integer
+  compares (~84), uniform shifts (~68), then `0xc17`, `0x20a`, `0xb63`.
+- Mesh and vertex native still shade some meshes too dark, so `EDEN_NX2_NATIVE` covers compute and
+  fragment; `EDEN_NX2_NATIVE_STAGES=mesh,vertex` opts in.
+- Graphics output correctness: fragment color comes from `EmitFragmentExit` (R0+ mapped by the pixel
+  shader header), the same rule the Maxwell frontend's EXIT applies, and `FMNMX`/`IMNMX` treat bit
+  90 as a min/max swap rather than a negated predicate.
 - The captured native stream is serialized with the environment in the pipeline cache (version 51),
   so the flag also works on cached programs, not just the first run.
 - Next: those families, then the first end-to-end compile (`spirv-val`), then `EDEN_NX2_NATIVE=1` on

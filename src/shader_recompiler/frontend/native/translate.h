@@ -75,6 +75,10 @@ private:
     [[nodiscard]] IR::FpControl FloatControl() const;
     void WriteFloat(const IR::F32& value);
     void WriteUint(const IR::U32& value);
+    /// Store to an explicit register index, applying the instruction guard. WriteFloat and
+    /// WriteUint use it for their destination, and the attribute and stage buffer loads use it for
+    /// every register of a multi-register result.
+    void StoreUint(u32 index, const IR::U32& value);
 
     void EmitMove();
     void EmitSystemRegisterRead();
@@ -138,6 +142,9 @@ private:
     void EmitWideMultiplyAdd();
     void EmitSignExtend();
     void EmitImmediateShuffle();
+    void EmitAttributeLoad();
+    void EmitAttributeInterpolation();
+    void EmitStageBufferAccess();
 
     Environment& env;
     IR::IREmitter ir;

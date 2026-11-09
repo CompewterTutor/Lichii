@@ -104,12 +104,14 @@ private:
     void AppendBlockNode(IR::Block* block);
     void TranslateRange(IR::Block* block, u32 begin, u32 end);
     void EmitBreak(IR::Block* block, const IR::U1& cond, IR::Block* merge, IR::Block* skip);
+    /// Write the fragment color the way the Maxwell EXIT does: the color lives in R0 and up at the
+    /// exit, mapped to render targets and components by the pixel shader's output map.
+    void EmitFragmentExit(IR::Block& block);
     [[nodiscard]] IR::U1 ConditionValue(IR::Block& block, const ControlBlock& control);
     [[nodiscard]] u32 BlockContaining(u32 instruction) const;
     [[nodiscard]] IR::Block* EmitRange(u32 first, u32 last, IR::Block* merge);
     /// End the program at the given block: emit an epilogue block and a Return node after it.
     void EmitReturn(IR::Block* from);
-
     Environment& env;
     std::span<const Ampere::Instruction> code;
     ObjectPool<IR::Inst>& inst_pool;
@@ -131,5 +133,10 @@ private:
     std::set<u32> emitting_loops;
     std::vector<LoopContext> loops;
 };
+
+/// True when any node of the syntax list names the block as a target: a block, an if or loop
+/// branch, a merge or a break destination.
+[[nodiscard]] bool ReferencesBlock(const IR::AbstractSyntaxList& syntax_list,
+                                   const IR::Block* block);
 
 } // namespace Shader::Native

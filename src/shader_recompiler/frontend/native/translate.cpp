@@ -168,38 +168,29 @@ IR::FpControl Translator::FloatControl() const {
 }
 
 void Translator::WriteFloat(const IR::F32& value) {
-    const u32 dest = current.Bits(16, 8);
+    StoreUint(current.Bits(16, 8), ir.BitCast<IR::U32>(value));
+}
+
+void Translator::WriteUint(const IR::U32& value) {
+    StoreUint(current.Bits(16, 8), value);
+}
+
+void Translator::StoreUint(u32 index, const IR::U32& value) {
     const Guard guard = DecodeGuard(current);
     if (!guard) {
-        if (dest != 255) {
-            ir.SetReg(Register(dest), ir.BitCast<IR::U32>(value));
+        if (index != 255) {
+            ir.SetReg(Register(index), value);
         }
         return;
     }
     // A guarded instruction keeps the previous destination value when the guard is false. That is
     // exact for a register destination and needs no control flow of its own.
-    if (dest == 255) {
+    if (index == 255) {
         return;
     }
     const IR::U1 condition = ir.GetPred(static_cast<IR::Pred>(guard.index), guard.negated);
-    const IR::U32 stored{ir.BitCast<IR::U32>(value)};
-    ir.SetReg(Register(dest), IR::U32{ir.Select(condition, stored, Gpr(dest))});
-}
-
-void Translator::WriteUint(const IR::U32& value) {
-    const u32 dest = current.Bits(16, 8);
-    const Guard guard = DecodeGuard(current);
-    if (!guard) {
-        if (dest != 255) {
-            ir.SetReg(Register(dest), value);
-        }
-        return;
-    }
-    if (dest == 255) {
-        return;
-    }
-    const IR::U1 condition = ir.GetPred(static_cast<IR::Pred>(guard.index), guard.negated);
-    ir.SetReg(Register(dest), IR::U32{ir.Select(condition, value, Gpr(dest))});
+    const IR::Reg reg{Register(index)};
+    ir.SetReg(reg, IR::U32{ir.Select(condition, value, ir.GetReg(reg))});
 }
 
 void Translator::EmitMove() {
@@ -1373,8 +1364,9 @@ void Translator::EmitIntegerMinMax() {
     const IR::U32 maximum{signed_order ? IR::U32{ir.SMax(a, b)} : IR::U32{ir.UMax(a, b)}};
     const u32 predicate = current.Bits(87, 3);
     const bool negated = current.Bits(90, 1) != 0;
-    const IR::U1 condition{predicate == 7 ? ir.Imm1(!negated)
-                                          : ir.GetPred(static_cast<IR::Pred>(predicate), negated)};
+    // Same rule as FMNMX: the negation bit swaps min and max, it does not negate the predicate.
+    const IR::U1 condition{predicate == 7 ? ir.Imm1(true)
+                                          : ir.GetPred(static_cast<IR::Pred>(predicate))};
     WriteUint(IR::U32{ir.Select(condition, negated ? maximum : minimum,
                                  negated ? minimum : maximum)});
 }
@@ -1508,9 +1500,11 @@ void Translator::EmitFloatMinMax() {
     const IR::F32 minimum = ir.FPMin(a, b, control);
     const u32 predicate = current.Bits(87, 3);
     const bool negated = current.Bits(90, 1) != 0;
+    // The negation bit swaps min and max, it does not negate the predicate: the Maxwell rule is
+    // Select(pred, min, max) after the swap, and PT reads as true.
     const IR::U1 condition{predicate == 7
-                               ? ir.Imm1(!negated)
-                               : ir.GetPred(static_cast<IR::Pred>(predicate), negated)};
+                               ? ir.Imm1(true)
+                               : ir.GetPred(static_cast<IR::Pred>(predicate))};
     WriteFloat(IR::F32{ir.Select(condition, negated ? maximum : minimum,
                                  negated ? minimum : maximum)});
 }
@@ -2571,6 +2565,108 @@ void Translator::EmitImmediateShuffle() {
     WriteUint(result);
 }
 
+void Translator::EmitAttributeLoad() {
+    // ALD reads one to four consecutive float attributes into consecutive registers. The address is
+    // a byte offset into the attribute space, so the attribute index is address / 4. Indexed reads,
+    // tessellation patches and tessellation output reads use encodings the lowering already guards;
+    // their meaning here is not confirmed from captured words, so they fall back.
+    if (current.Bits(77, 1) || current.Bits(24, 8) != 255) {
+        throw Unsupported{"native indexed attribute access"};
+    }
+    if (current.Bits(76, 1) || current.Bits(79, 1)) {
+        throw Unsupported{"native patch or output attribute access"};
+    }
+    const u32 address = current.Bits(40, 10);
+    const u32 components = current.Bits(74, 2) + 1;
+    if (address % 4 != 0 || address + components * 4 > 0x400) {
+        throw Unsupported{"native attribute address"};
+    }
+    const u32 dest = current.Bits(16, 8);
+    if (dest == 255) {
+        return;
+    }
+    if (dest + components > 255) {
+        throw Unsupported{"native attribute register range"};
+    }
+    const IR::U32 vertex{Gpr(current.Bits(32, 8))};
+    for (u32 element = 0; element < components; ++element) {
+        const IR::Attribute attribute{address / 4 + element};
+        StoreUint(dest + element, ir.BitCast<IR::U32>(ir.GetAttribute(attribute, vertex)));
+    }
+}
+
+void Translator::EmitAttributeInterpolation() {
+    // IPA reads one varying. Captured programs only use the non-indexed pass and centroid forms;
+    // the sample location is the host's choice, and a multiplier, indexed access or saturate has no
+    // confirmed encoding here.
+    if (current.Bits(32, 8) != 255 || current.Bits(76, 2) > 1 || current.Bits(79, 1) ||
+        current.Bits(81, 3) != 7) {
+        throw Unsupported{"native IPA mode"};
+    }
+    const IR::Attribute attribute{current.Bits(64, 8)};
+    IR::F32 value{ir.GetAttribute(attribute)};
+    if (IR::IsGeneric(attribute) || IR::IsLegacyAttribute(attribute)) {
+        // The same rule as the Maxwell IPA: a legacy varying keeps perspective interpolation unless
+        // the header says otherwise, and a generic one follows the pixel shader's input map, where
+        // an unused map entry also means perspective.
+        bool perspective{IR::IsLegacyAttribute(attribute)};
+        if (!perspective) {
+            Shader::PixelImap effective{Shader::PixelImap::Unused};
+            const u32 index = IR::GenericAttributeIndex(attribute);
+            for (const Shader::PixelImap component : env.SPH().ps.GenericInputMap(index)) {
+                if (component != Shader::PixelImap::Unused) {
+                    effective = component;
+                    break;
+                }
+            }
+            perspective = effective == Shader::PixelImap::Perspective ||
+                          effective == Shader::PixelImap::Unused;
+        }
+        if (perspective) {
+            value = ir.FPMul(value, ir.GetAttribute(IR::Attribute::PositionW));
+        }
+    }
+    WriteFloat(value);
+}
+
+void Translator::EmitStageBufferAccess() {
+    // ISBERD and ISBEWR address the task and mesh stage buffer in linear bytes: 24-31 is the
+    // address register, 40-63 the byte offset, 75 selects the 32-bit access, 76-77 the region (0 is
+    // the map, 3 the attribute region) and 79 marks a write.
+    const Shader::Stage stage{env.ShaderStage()};
+    if (stage != Shader::Stage::Task && stage != Shader::Stage::Mesh) {
+        throw Unsupported{"native stage buffer access outside task and mesh programs"};
+    }
+    const bool write = current.Bits(0, 12) == 0x927;
+    const u32 region = current.Bits(76, 2);
+    const bool output = current.Bits(79, 1) != 0;
+    if ((current.words[2] & ~0xf800U) != 0 || (region != 0 && region != 3) || write != output) {
+        throw Unsupported{"native stage buffer access mode"};
+    }
+    const IR::U32 address{ir.IAdd(Gpr(current.Bits(24, 8)), ir.Imm32(current.Bits(40, 24)))};
+    if (!write) {
+        if (region != 3 || current.Bits(16, 8) == 255) {
+            throw Unsupported{"native stage buffer read mode"};
+        }
+        WriteUint(ir.IsbeRead(address));
+        return;
+    }
+    const IR::U32 value{Gpr(current.Bits(32, 8))};
+    const bool word = current.Bits(75, 1) != 0;
+    if (region == 3) {
+        if (!word) {
+            throw Unsupported{"native stage buffer attribute write"};
+        }
+        ir.IsbeWriteAttribute(address, value);
+        return;
+    }
+    if (word) {
+        ir.IsbeWriteMapU32(address, value);
+    } else {
+        ir.IsbeWriteMapU8(address, value);
+    }
+}
+
 void Translator::Emit() {
     switch (current.Bits(0, 12)) {
     case 0x220: // FMUL  (form 1)
@@ -2828,6 +2924,16 @@ void Translator::Emit() {
             current.words[2] != 0) {
             throw Unsupported{"native dependency barrier mode"};
         }
+        return;
+    case 0x321: // ALD
+        EmitAttributeLoad();
+        return;
+    case 0x326: // IPA.PASS / IPA.CENTROID
+        EmitAttributeInterpolation();
+        return;
+    case 0x923: // ISBERD
+    case 0x927: // ISBEWR
+        EmitStageBufferAccess();
         return;
     case 0x945: // BSSY
     case 0x941: // BSYNC

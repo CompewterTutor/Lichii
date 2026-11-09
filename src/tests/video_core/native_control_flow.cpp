@@ -57,6 +57,14 @@ public:
         return std::nullopt;
     }
     void Dump(u64, u64) override {}
+
+    void SetStage(Shader::Stage value) {
+        stage = value;
+    }
+
+    void SetColorTargets(u32 targets) {
+        sph.ps.omap.target = targets;
+    }
 };
 
 constexpr Instruction Nop{{0x00007918, 0, 0, 0x000fc000}};
@@ -135,6 +143,44 @@ TEST_CASE("An unconditional exit ends the program", "[video_core][native][contro
     CHECK(nodes[0] == Type::Block);
     CHECK(nodes[1] == Type::Block); // the epilogue never gets its own if
     CHECK(nodes[2] == Type::Return);
+}
+
+TEST_CASE("A fragment exit writes the color from R0 and up", "[video_core][native][control]") {
+    // The color of an NVN2 fragment shader lives in R0 and up at the exit; the pixel shader header
+    // maps those registers to render targets and components, and a program without the stores draws
+    // nothing.
+    Built built{std::vector<Instruction>{Nop, Exit}};
+    built.env.SetStage(Shader::Stage::Fragment);
+    built.env.SetColorTargets(0xf); // render target 0, all four components
+    INFO(built.structurer->Error());
+    REQUIRE(built.structurer->Build());
+
+    size_t color_stores{};
+    for (const auto& node : built.structurer->Syntax()) {
+        if (node.type != IR::AbstractSyntaxNode::Type::Block) {
+            continue;
+        }
+        for (const IR::Inst& inst : node.data.block->Instructions()) {
+            if (inst.GetOpcode() == IR::Opcode::SetFragColor) {
+                CHECK(inst.Arg(0).U32() == 0); // render target
+                CHECK(inst.Arg(1).U32() == color_stores);
+                ++color_stores;
+            }
+        }
+    }
+    CHECK(color_stores == 4);
+
+    // A vertex program leaves R0..R3 alone.
+    Built vertex{std::vector<Instruction>{Nop, Exit}};
+    REQUIRE(vertex.structurer->Build());
+    for (const auto& node : vertex.structurer->Syntax()) {
+        if (node.type != IR::AbstractSyntaxNode::Type::Block) {
+            continue;
+        }
+        for (const IR::Inst& inst : node.data.block->Instructions()) {
+            CHECK(inst.GetOpcode() != IR::Opcode::SetFragColor);
+        }
+    }
 }
 
 TEST_CASE("A backward branch becomes a loop", "[video_core][native][control]") {

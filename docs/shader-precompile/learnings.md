@@ -1146,3 +1146,57 @@ where before the fix it reported none.
 Measured, not assumed: a cold-cache native run reached the same save with the image matching the
 baseline within temporal noise (mean 5.9 per channel across the run boundary against 5.4 between two
 frames of the same run), with 112 of 1229 programs translating natively.
+
+## 2026-11-09 - ALD, IPA and ISBERD, and the four bugs behind the first native graphics frame
+
+The graphics gate was `ALD` (0x321), `IPA` (0x326) and, for Switch 2 task/mesh programs, `ISBERD` /
+`ISBEWR` (0x923/0x927). All three are now translated straight to IR with the field layouts from the
+lowering, checked against nvdisasm on captured words:
+
+- `ALD`: dest 16-23, vertex 32-39, byte address 40-49, components 74-75 (+1), patch 76, output 79.
+  Indexed and patch/output reads are refused, matching the lowering's own guards.
+- `IPA`: attribute 64-71, sample mode 76-77, constant bit 78; non-indexed pass/centroid only. The
+  perspective rule is the Maxwell one: legacy attributes stay perspective, generics follow the
+  pixel shader input map, and an unused entry also means perspective.
+- `ISBEWR`/`ISBERD`: address register 24-31, byte offset 40-63, `.32` 75, region 76-77 (0 = map,
+  3 = attributes), write 79. Task/mesh only.
+
+Corpus check on Ocarina of Time's 37,947 captured programs: 67,975 `ALD`, 407,967 `IPA` and 21,956
+`ISBE` instructions, every one inside the accepted subset. The opcode list went 137 -> 141.
+
+Live A/B on the Kokiri Forest save, warm pipeline cache: 1,200 native attempts, 42 distinct
+programs translate (0 graphics programs before), image matching the lowering within the run's own
+temporal noise (mean 5.06 per channel against ~5.4 between two frames of one run). Remaining
+fallbacks: `AST` 0x322 (402), `FRAG` 0x95b (171), extended integer compares (84), uniform shifts
+(68), then `0xc17`, `0x20a`, `0xb63`.
+
+Four bugs had to be found and fixed before that frame rendered:
+
+- **Driver crash on a mesh program.** `PatchMeshInstructions` rewrites a marker `OpStore` into
+  `OpSetMeshOutputsEXT` but matched only the single marker recorded in `EmitContext`. A program with
+  more than one exit has one epilogue per exit and therefore several markers, each with its own
+  primitive-count id; only the last was patched and the rest stayed `OpStore <constant>`, which is
+  invalid SPIR-V. spirv-val reports `OpStore Pointer <id> is not a logical pointer` and the NVIDIA
+  driver crashes. Fix: match the marker by its constant vertex-count pointer alone.
+- **Native fragment programs rendered nothing (black screen).** The fragment color of an NVN2
+  program is in R0 and up at the exit, and the Maxwell frontend's EXIT maps those registers to
+  render targets and components from the pixel shader header. The native structurer only created an
+  epilogue block and never emitted those stores. Fix: `EmitFragmentExit` on every exit path.
+- **`FMNMX`/`IMNMX` inverted the swap bit.** The negation bit (90) is a min/max swap, not a negated
+  predicate: the Maxwell rule is `if (neg) swap(min, max); Select(pred, min, max)` with PT reading
+  as true. The native frontend used it as `GetPred(pred, negated)` too, so a cube-map coordinate
+  normalisation that must be a maximum became a minimum and the sky and terrain went black. The
+  existing unit test only covered a non-negated instruction, which is why it passed.
+- **Loop latch blocks had no successors.** The `Repeat` node branches to the loop header and merge,
+  but the IR block had no matching successors, so the merge had no predecessor; a pass dropped it
+  while the syntax list kept it and the backend emitted an unset label. Fix: `BranchTo` header and
+  merge from the latch.
+
+Tooling: ported upstream `EDEN_NX2_PIPELINE_BUILD_TRACE` (c87f09a84c) and extended it to record the
+native frontend's per-program result; added `EDEN_NX2_SPIRV_DUMP` (every graphics stage's SPIR-V
+plus the captured native stream) and `EDEN_NX2_NATIVE_STAGES` to restrict the native frontend to
+named stages while bringing one up. The crash, the black screen and the dark image were all found
+with those three.
+
+Open: mesh/vertex native still shades some meshes too dark (the character in the Kokiri Forest save),
+so `EDEN_NX2_NATIVE` defaults to compute and fragment; `EDEN_NX2_NATIVE_STAGES=mesh,vertex` opts in.
