@@ -10,6 +10,7 @@
 #include <mutex>
 #include <optional>
 #include <span>
+#include "video_core/page_filter.h"
 #include "common/container/unordered_map.h"
 #include <utility>
 
@@ -41,6 +42,9 @@ class QueryCacheBase : public VideoCommon::ChannelSetupCaches<VideoCommon::Chann
     using RuntimeType = typename Traits::RuntimeType;
 
 public:
+    /// Device pages this cache ever registered objects on (InnerInvalidation skips the rest).
+    VideoCommon::PageFilter page_filter;
+
     union QueryLocation {
         BitField<27, 5, u32> stream_id;
         BitField<0, 27, u32> query_id;
@@ -63,14 +67,19 @@ public:
     }
 
     void FlushRegion(VAddr addr, std::size_t size) {
-        bool result = false;
-        IterateCache<false>(addr, size, [this, &result](QueryLocation location) {
-            result |= SemiFlushQueryDirty(location);
-            return result;
-        });
-        if (result) {
+        if (SemiFlushRegion(addr, size)) {
             RequestGuestHostSync();
         }
+    }
+
+    /// Writes out the finalized reports in the region. True when some still wait for host results.
+    bool SemiFlushRegion(VAddr addr, std::size_t size) {
+        bool result = false;
+        // Visits every query in the range: each final value not written yet is written here.
+        IterateCache<false>(addr, size, [this, &result](QueryLocation location) {
+            result |= SemiFlushQueryDirty(location);
+        });
+        return result;
     }
 
     static u64 BuildMask(std::span<const QueryType> types) {
@@ -79,6 +88,34 @@ public:
             mask |= 1ULL << (static_cast<u64>(query_type));
         }
         return mask;
+    }
+
+    /// Any thread: whether the cache holds a report that can still land in [addr, addr + size),
+    /// written out by SemiFlushRegion or once its host result comes in: one whose value and
+    /// timestamp (16 bytes from its address) reach into the range.
+    [[nodiscard]] bool HoldsQueries(VAddr addr, size_t size) {
+        if (size == 0) {
+            return false;
+        }
+        constexpr u64 report_size = 16;
+        const u64 begin = addr >= report_size - 1 ? addr - (report_size - 1) : 0;
+        const u64 end = addr + size;
+        std::scoped_lock lock(cache_mutex);
+        for (u64 page = begin >> Core::DEVICE_PAGEBITS; page <= (end - 1) >> Core::DEVICE_PAGEBITS;
+             ++page) {
+            const auto it = cached_queries.find(page);
+            if (it == cached_queries.end()) {
+                continue;
+            }
+            const u64 page_start = page << Core::DEVICE_PAGEBITS;
+            for (const auto& entry : it->second) {
+                const u64 query = page_start + entry.first;
+                if (query >= begin && query < end) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /// Return true when a CPU region is modified from the GPU
@@ -123,8 +160,10 @@ public:
 protected:
     template <bool remove_from_cache, typename Func>
     void IterateCache(VAddr addr, std::size_t size, Func&& func) {
+        // invoke_result_t: with invoke_result (the trait, never bool) callbacks returning bool
+        // never ended the walk early.
         static constexpr bool RETURNS_BOOL =
-            std::is_same_v<std::invoke_result<Func, QueryLocation>, bool>;
+            std::is_same_v<std::invoke_result_t<Func, QueryLocation>, bool>;
         const u64 addr_begin = addr;
         const u64 addr_end = addr_begin + size;
 
@@ -142,10 +181,12 @@ protected:
                 continue;
             }
             auto& contents = it->second;
+            bool matched = false;
             for (auto& query : contents) {
                 if (!in_range(query.first)) {
                     continue;
                 }
+                matched = true;
                 if constexpr (RETURNS_BOOL) {
                     if (func(query.second)) {
                         return;
@@ -154,7 +195,11 @@ protected:
                     func(query.second);
                 }
             }
+            // Only pages with a query in the range: the scan above already found none elsewhere.
             if constexpr (remove_from_cache) {
+                if (!matched) {
+                    continue;
+                }
                 const auto in_range2 = [&](const std::pair<u32, QueryLocation>& pair) {
                     return in_range(pair.first);
                 };
@@ -170,6 +215,9 @@ protected:
     bool SemiFlushQueryDirty(QueryLocation location);
     void RequestGuestHostSync();
     void UnregisterPending();
+    /// Before a report's bytes go to guest memory: a download for a guest read still on its way
+    /// would write the GPU's older copy over them later (as MemoryManager::Write).
+    void FinishReads(DAddr address, size_t size);
 
     ::Common::unordered_map<u64, ::Common::unordered_map<u32, QueryLocation>> cached_queries;
     std::mutex cache_mutex;

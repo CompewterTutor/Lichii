@@ -22,6 +22,7 @@
 #include "core/frontend/graphics_context.h"
 #include "video_core/capture.h"
 #include "video_core/gpu.h"
+#include "video_core/nx2_profile.h"
 #include "video_core/present.h"
 #include "video_core/render_trace.h"
 #include "video_core/renderer_vulkan/present/util.h"
@@ -197,6 +198,13 @@ try
     VideoCore::FxChain::Instance().LoadFromSettings();
 #endif
 
+    device_info = {
+        .model = std::string{device.GetModelName()},
+        .driver = device.GetDriverVersion() != 0
+                      ? fmt::format("{} {}", device.GetVendorName(), GetDriverVersion(device))
+                      : std::string{},
+        .api = "Vulkan",
+    };
     Report();
 } catch (const vk::Exception& exception) {
     LOG_ERROR(Render_Vulkan, "Vulkan initialization failed with error: {}", exception.what());
@@ -222,10 +230,16 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
         return;
     }
 
+    if (VideoCommon::StutterTrace::Enabled()) {
+        VideoCommon::StutterTrace::OnPresent();
+    }
     RenderScreenshot(framebuffers);
     const auto acquiring = trace ? std::chrono::steady_clock::now()
                                  : std::chrono::steady_clock::time_point{};
-    Frame* frame = present_manager.GetRenderFrame();
+    Frame* frame = [this] {
+        const VideoCommon::Nx2Profile::Scope scope{VideoCommon::Nx2Profile::Zone::Present};
+        return present_manager.GetRenderFrame();
+    }();
     const auto acquired = trace ? std::chrono::steady_clock::now()
                                 : std::chrono::steady_clock::time_point{};
 
@@ -258,7 +272,10 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
 
     const auto presenting = trace ? std::chrono::steady_clock::now()
                                   : std::chrono::steady_clock::time_point{};
-    present_manager.Present(frame);
+    {
+        const VideoCommon::Nx2Profile::Scope scope{VideoCommon::Nx2Profile::Zone::Present};
+        present_manager.Present(frame);
+    }
     const auto presented = trace ? std::chrono::steady_clock::now()
                                  : std::chrono::steady_clock::time_point{};
 #ifdef HAS_LSFG
@@ -292,10 +309,6 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
 
 void RendererVulkan::Report() const {
     using namespace Common::Literals;
-    const std::string vendor_name{device.GetVendorName()};
-    const std::string model_name{device.GetModelName()};
-    const std::string driver_version = GetDriverVersion(device);
-    const std::string driver_name = fmt::format("{} {}", vendor_name, driver_version);
 
     const std::string api_version = GetReadableVersion(device.ApiVersion());
 
@@ -303,8 +316,8 @@ void RendererVulkan::Report() const {
 
     const auto available_vram = static_cast<f64>(device.GetDeviceLocalMemory()) / f64{1_GiB};
 
-    LOG_INFO(Render_Vulkan, "Driver: {}", driver_name);
-    LOG_INFO(Render_Vulkan, "Device: {}", model_name);
+    LOG_INFO(Render_Vulkan, "Driver: {} {}", device.GetVendorName(), GetDriverVersion(device));
+    LOG_INFO(Render_Vulkan, "Device: {}", device_info.model);
     LOG_INFO(Render_Vulkan, "Vulkan: {}", api_version);
     LOG_INFO(Render_Vulkan, "Available VRAM: {:.2f} GiB", available_vram);
     if (VideoCommon::RenderTrace::Enabled()) {

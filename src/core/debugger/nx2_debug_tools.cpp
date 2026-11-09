@@ -1043,7 +1043,9 @@ json ScanShaders(ToolState& state, const json& params) {
 
 Handlers MakeHandlers(const std::shared_ptr<ToolState>& state) {
     const auto handler = [&state](json (*tool)(ToolState&, const json&)) -> Handler {
-        return [state, tool](const json& params) { return tool(*state, params); };
+        return [state, tool](const json& params, const ClientGone&) {
+            return tool(*state, params);
+        };
     };
     return {
         {"status", handler(Status)},

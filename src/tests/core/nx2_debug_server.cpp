@@ -19,8 +19,11 @@ using nlohmann::json;
 
 Handlers EchoHandlers() {
     return {
-        {"echo", [](const json& params) { return params; }},
-        {"fail", [](const json&) -> json { throw std::runtime_error{"broken"}; }},
+        {"echo", [](const json& params, const Core::Nx2Debug::ClientGone&) { return params; }},
+        {"fail",
+         [](const json&, const Core::Nx2Debug::ClientGone&) -> json {
+             throw std::runtime_error{"broken"};
+         }},
     };
 }
 

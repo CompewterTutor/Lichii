@@ -61,22 +61,21 @@ TEST_CASE("Indexed ULDC lowers subword widths through Maxwell LDC", "[video_core
     CHECK(byte.offset == 3);
 }
 
-TEST_CASE("Indexed ULDC keeps the alignment, bank and mode checks", "[video_core][ampere][uldc]") {
-    // An odd halfword offset, an unbound bank, an unknown width and a non-IS mode word all stay
-    // rejected, so accepting subword sizes did not loosen the rest of the encoding.
+TEST_CASE("Indexed ULDC keeps the bank, width and mode checks", "[video_core][ampere][uldc]") {
+    // An unbound bank, an unknown width and an unbound destination all stay rejected, so
+    // accepting subword sizes did not loosen the rest of the encoding. An offset the index
+    // register can align is accepted: the host reads the aligned word either way.
     for (const auto change : std::array{
-             std::array{38U, 16U, 1U}, std::array{54U, 5U, 18U},
-             std::array{73U, 3U, 1U}, std::array{73U, 3U, 3U},
-             std::array{16U, 8U, 63U}, std::array{0U, 12U, 0xab9U}}) {
+             std::array{54U, 5U, 18U}, std::array{73U, 3U, 1U},
+             std::array{73U, 3U, 3U}, std::array{16U, 8U, 63U}}) {
         auto instruction = CapturedHalfword;
         SetBits(instruction, change[0], change[1], change[2]);
-        if (change[0] == 0 && change[2] == 0xab9U) {
-            // The direct form has no index register, so the same word needs one supplied.
-            SetBits(instruction, 38, 16, 2);
-        }
         const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
         CHECK_FALSE(lowered);
     }
+    auto odd = CapturedHalfword;
+    SetBits(odd, 38, 16, 1);
+    CHECK(LowerToMaxwell(std::array{odd, Exit}));
     auto mode = CapturedHalfword;
     SetBits(mode, 0, 12, 0xab9);
     SetBits(mode, 38, 16, 2);

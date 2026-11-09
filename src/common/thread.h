@@ -20,10 +20,19 @@ namespace Common {
 
 class Event {
 public:
+#ifdef _WIN32
+    ~Event();
+#endif
+
     void Set() {
         std::scoped_lock lk{mutex};
         if (!is_set) {
             is_set = true;
+#ifdef _WIN32
+            if (sleepers != 0) {
+                WakeSleeper();
+            }
+#endif
             condvar.notify_one();
         }
     }
@@ -35,6 +44,10 @@ public:
     }
 
     bool WaitFor(const std::chrono::nanoseconds time);
+
+    /// Like WaitFor, but always blocks in the OS. On Windows, WaitFor keeps the thread running
+    /// in a hardware wait; this sleeps on a high-resolution waitable timer instead.
+    bool SleepFor(const std::chrono::nanoseconds time);
 
     template<class Clock, class Duration>
     bool WaitUntil(const std::chrono::time_point<Clock, Duration> time) {
@@ -57,9 +70,17 @@ public:
     }
 
 private:
+#ifdef _WIN32
+    void WakeSleeper();
+#endif
+
     alignas(64) std::atomic<bool> is_set{false};
     std::condition_variable condvar;
     std::mutex mutex;
+#ifdef _WIN32
+    void* sleep_wake{};
+    u32 sleepers{};
+#endif
 };
 
 class Barrier {
@@ -111,6 +132,14 @@ void SetCurrentThreadToPerformanceCores();
 void SetCurrentThreadToEfficiencyCores();
 void SetCurrentThreadToBackgroundWork();
 void SetCurrentThreadToAllCores();
+
+enum class PinnedRole : u32 { GpuFront, GpuBack, GuestCore };
+
+/// The experimental pin_gpu_threads setting (Windows and Linux): the split GPU thread's front and
+/// back each get a physical performance core of their own and the guest cores keep off those two.
+/// Skipped, with one log line, on CPUs with too few cores, with EDEN_HYBRID_CORES=0 (Windows), and
+/// on other hosts.
+void PinCurrentThread(PinnedRole role);
 
 void RefreshThreadPolicies();
 void PollThreadPolicies();

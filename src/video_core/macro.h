@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <bitset>
 #include <memory>
 #include "video_core/macro_memo.h"
 #include "video_core/macro_turing.h"
@@ -238,7 +239,7 @@ struct MacroEngine {
     }
     // Clear the code associated with a method.
     inline void ClearCode(u32 method) noexcept {
-        if (native_turing) { native_write_offset = method < 0x1000 ? method * 3 : static_cast<u32>(native_code.size()); return; }
+        if (native_turing) { native_write_offset = u64{method} * 3 < native_code.size() ? method * 3 : static_cast<u32>(native_code.size()); return; }
         macro_cache.erase(method);
         uploaded_macro_code.erase(method);
     }
@@ -255,7 +256,7 @@ struct MacroEngine {
     bool native_turing{};
     bool native_execution_failed{};
     u32 native_write_offset{};
-    std::array<u32, 0x3000> native_code{};
+    std::array<u32, 0x8000> native_code{};
     TuringMacroInterpreter native_interpreter;
     std::vector<u32> native_fifo;
     // Calls replayed instead of interpreted (macro_memo.h), and what the current call wrote.
@@ -265,7 +266,11 @@ struct MacroEngine {
     std::shared_ptr<TuringMacroJit> native_jit;
     MacroMemoPairs native_writes;
     u64 native_calls{};
-
+    /// Set while the split GPU thread's back runs a call in its front's place (Maxwell3D::
+    /// FrontRunOnBack): the 3D registers the call can write. Such a call uses no data RAM; its
+    /// writes to other registers are counted in split_unexpected_writes.
+    const std::bitset<0xe00>* split_writes{};
+    u64 split_unexpected_writes{};
 };
 
 struct NativeMacroContext {
