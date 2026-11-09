@@ -873,3 +873,19 @@ Numbers here come from two OoT sessions on the local machine (build `nx2-99ac3d5
   count understates this: several of the forms were inside opcodes already marked implemented.
 - Diagnostics continue to pay: every bug in this batch (a missing dispatch case, a `Value` that
   needed an explicit `IR::U32` wrapper) was found from one report line naming the instruction.
+
+## 2026-11-09 - Native frontend: 1397 IR instructions, and one crash worth stopping for
+
+- ULOP3 (0x292/0x892) and I2FP 32-bit (0x245/0xa45/0xc45) take the captured program from 1111 to 1397
+  emitted IR instructions. Uniform index 63 is the zero register (URZ), not a real uniform register,
+  so reads of it become a constant zero.
+- Then STL/LDL (0x387) turned up, and translating it exposes a hard crash (exit 0xC0000005, no JSON,
+  no exception) past instruction 164 - `CS2R R2, SRZ`. A per-instruction trace behind
+  `EDEN_NX2_TRACE_INST` showed the translation of 161 (STL) succeeding and the process dying at 164.
+- Both are **refused again** rather than shipped, because a crash cannot fall back: the shader cache
+  falls back on an exception, and an access violation walks past the handler and takes the emulator
+  down. The rule that comes out of this: a new translation is only safe to enable when the process
+  survives its failure, and a refusal is always better than an uncaught fault.
+- The crash itself is not yet explained. What is known: it needs both the STL translation and CS2R to
+  be reached, it is an access violation rather than a stack overflow, and the translator's own prints
+  show the IR for 161 completing. The next step is a debugger or a checked build, not more printing.
