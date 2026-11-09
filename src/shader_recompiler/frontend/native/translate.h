@@ -85,6 +85,8 @@ private:
     void EmitGlobalLoad();
     void EmitGlobalStore();
     void EmitSharedMemory();
+    void EmitLocalMemory();
+    void EmitCopySpecialToRegisterPair();
     void EmitShuffleRegister();
     void EmitFloatMinMax();
     void EmitShift();
@@ -96,6 +98,7 @@ private:
     void EmitUniformSelect();
     void EmitUniformWideMultiplyAdd();
     void EmitUniformMultiplyAdd();
+    void EmitUniformLogicLut();
     void EmitIntegerToFloat();
     void EmitUniformConstantLoad();
     [[nodiscard]] IR::U64 OffsetU64(u32 value, bool negative);

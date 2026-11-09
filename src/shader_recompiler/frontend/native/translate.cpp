@@ -4,6 +4,8 @@
 #include "shader_recompiler/frontend/native/translate.h"
 
 #include <array>
+#include <cstdio>
+#include <cstdlib>
 #include <bit>
 
 #include "shader_recompiler/frontend/maxwell/translate/impl/common_funcs.h"
@@ -837,6 +839,47 @@ void Translator::EmitGlobalStore() {
     }
 }
 
+void Translator::EmitCopySpecialToRegisterPair() {
+    // CS2R: a special register copied into a register pair. SRZ is the zero idiom, which is what the
+    // captured program uses to clear a 64-bit address. The field layout is not confirmed yet, so it
+    // is refused rather than guessed (`00027805 00000000 0001ff00` decodes as `CS2R R2, SRZ` with
+    // 0xff where the special number is expected).
+    throw Unsupported{"native special register pair"};
+}
+
+void Translator::EmitLocalMemory() {
+    // 32-bit STL/LDL translate, but turning them on exposes a crash one block later (instruction
+    // 164, CS2R) that has not been explained yet, so they stay refused: a crash cannot fall back.
+    throw Unsupported{"native local memory mode"};
+    // STL / LDL: local memory is addressed by byte and the IR takes a word offset, so the address is
+    // shifted down by two.
+    const u32 opcode = current.Bits(0, 12);
+    const u32 size = current.Bits(73, 3);
+    const bool uniform_address = current.Bits(91, 1) != 0;
+    const u32 offset = current.Bits(40, 24);
+    const u32 address = current.Bits(24, 8);
+    const u32 allowed = (opcode == 0x983 ? 0x200e00U : 0xe00U) |
+                        (uniform_address ? 0x08000000U | (opcode == 0x983 ? 0U : 0x3fU) : 0U);
+    if ((address != 255 && address >= 246) || (current.words[2] & ~allowed) != 0x00100000U ||
+        size != 4) {
+        throw Unsupported{"native local memory mode"};
+    }
+    IR::U32 pointer{ir.Imm32(offset)};
+    if (address != 255) {
+        pointer = IR::U32{ir.IAdd(Gpr(address), pointer)};
+    }
+    if (uniform_address) {
+        pointer = IR::U32{ir.IAdd(pointer, Uniform(current.Bits(64, 8)))};
+    }
+    const IR::U32 word{ir.ShiftRightLogical(pointer, ir.Imm32(2))};
+    if (opcode == 0x983) {
+        WriteUint(ir.LoadLocal(word));
+        return;
+    }
+    const IR::U32 stored = Gpr(current.Bits(32, 8));
+    ir.WriteLocal(word, stored);
+}
+
 void Translator::EmitSharedMemory() {
     // LDS / STS: a register base, an optional scale (stride), an optional uniform base and a byte
     // offset. IR takes the whole byte offset, so the pieces are simply added.
@@ -874,6 +917,35 @@ void Translator::EmitSharedMemory() {
     }
     const IR::Value value{ir.LoadShared(bit_size, false, pointer)};
     WriteUint(IR::U32{value});
+}
+
+void Translator::EmitUniformLogicLut() {
+    // ULOP3.LUT: the uniform-file version of LOP3, into a uniform register. Bit 91 marks the form,
+    // and index 63 of the uniform file is the zero register.
+    const u32 target = current.Bits(16, 8);
+    if (target >= NUM_UNIFORM_REGISTERS) {
+        throw Unsupported{"native uniform LUT destination"};
+    }
+    const auto uniform_or_zero = [&](u32 index) -> IR::U32 {
+        if (index == 63) {
+            return ir.Imm32(0);
+        }
+        return Uniform(index);
+    };
+    const IR::U32 a = uniform_or_zero(current.Bits(24, 8));
+    const IR::U32 b{current.Bits(0, 12) == 0x892 ? ir.Imm32(current.words[1])
+                                                 : uniform_or_zero(current.Bits(32, 8))};
+    const IR::U32 c = uniform_or_zero(current.Bits(64, 8));
+    IR::U32 value = BitwiseLut3(current.Bits(72, 8), a, b, c);
+    const u32 guard = current.Bits(12, 4);
+    if ((guard & 7) != 7) {
+        IR::U1 enabled = UniformPredicate(guard & 7);
+        if ((guard & 8) != 0) {
+            enabled = IR::U1{ir.LogicalNot(enabled)};
+        }
+        value = IR::U32{ir.Select(enabled, value, Uniform(target))};
+    }
+    ir.SetReg(UniformRegister(target), value);
 }
 
 void Translator::EmitUniformMultiplyAdd() {
@@ -1184,9 +1256,24 @@ void Translator::EmitFloatMinMax() {
 }
 
 void Translator::EmitIntegerToFloat() {
+    const u32 opcode = current.Bits(0, 12);
+    if (opcode != 0x306 && opcode != 0xd06) {
+        // I2FP.F32: a 32-bit source converted to float. Bit 74 picks the signed form, bits 78-79 the
+        // rounding mode.
+        if ((current.words[2] & ~(0x400U | 0xc000U | (opcode == 0xc45 ? 0x08000000U : 0U))) !=
+            0x00201000U) {
+            throw Unsupported{"native integer-to-float format"};
+        }
+        const IR::FpControl control{
+            .no_contraction = false,
+            .rounding = ROUNDING[current.Bits(78, 2)],
+            .fmz_mode = IR::FmzMode::DontCare,
+        };
+        WriteFloat(IR::F32{ir.ConvertIToF(32, 32, current.Bits(74, 1) != 0, ReadUint(1), control)});
+        return;
+    }
     // I2F.U8 / I2F.S8: a byte selected from the source, converted to float. Bit 74 picks the
     // signed form.
-    const u32 opcode = current.Bits(0, 12);
     const bool signed_conversion = current.Bits(74, 1) != 0;
     if ((current.words[2] & ~0x400U) != (opcode == 0xd06 ? 0x08001000U : 0x00001000U)) {
         throw Unsupported{"native integer-to-float format"};
@@ -1410,6 +1497,13 @@ void Translator::Emit() {
     case 0x986: // STG
         EmitGlobalStore();
         return;
+    case 0x805: // CS2R
+        EmitCopySpecialToRegisterPair();
+        return;
+    case 0x387: // STL
+    case 0x983: // LDL
+        EmitLocalMemory();
+        return;
     case 0x388: // STS with a register offset
     case 0x984: // LDS
     case 0x988: // STS
@@ -1420,6 +1514,10 @@ void Translator::Emit() {
         return;
     case 0x819: // SHF with an immediate shift
         EmitShift();
+        return;
+    case 0x292: // ULOP3
+    case 0x892: // ULOP3 with an immediate
+        EmitUniformLogicLut();
         return;
     case 0x8a4: // UIMAD
         EmitUniformMultiplyAdd();
@@ -1450,6 +1548,9 @@ void Translator::Emit() {
     case 0xc11: // LEA (uniform addend)
         EmitEffectiveAddress();
         return;
+    case 0x245: // I2FP 32-bit (register)
+    case 0xa45: // I2FP 32-bit (constant buffer)
+    case 0xc45: // I2FP 32-bit (uniform)
     case 0x306: // I2F
     case 0xd06: // I2F (uniform source)
         EmitIntegerToFloat();
