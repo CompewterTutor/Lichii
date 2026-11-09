@@ -205,10 +205,39 @@ bool Structurer::Split() {
     }
     entries.assign(blocks.size(), nullptr);
     appended.assign(blocks.size(), false);
+    FindLoops();
+    if (!error.empty()) {
+        return false;
+    }
     for (size_t index = 0; index < blocks.size(); ++index) {
         entries[index] = NewBlock();
     }
     return true;
+}
+
+void Structurer::FindLoops() {
+    // A backward branch is a loop's back edge; its target block is the loop header. Every program in
+    // the captured corpus is structured, so a header with two back edges means two continues and is
+    // refused rather than guessed.
+    loop_latch.assign(blocks.size(), NO_LATCH);
+    for (u32 index = 0; index < blocks.size(); ++index) {
+        const ControlBlock& block = blocks[index];
+        if (block.kind != ControlBlock::End::Conditional && block.kind != ControlBlock::End::Branch) {
+            continue;
+        }
+        if (block.kind == ControlBlock::End::Branch && block.target == block.terminator) {
+            continue; // The closing self-branch that ends the program is not a loop.
+        }
+        const u32 target = BlockContaining(block.target);
+        if (target > index) {
+            continue;
+        }
+        if (loop_latch[target] != NO_LATCH) {
+            error = "native loop has more than one back edge";
+            return;
+        }
+        loop_latch[target] = index;
+    }
 }
 
 u32 Structurer::BlockContaining(u32 instruction) const {
@@ -225,18 +254,15 @@ u32 Structurer::BlockContaining(u32 instruction) const {
     return low == 0 ? 0 : low - 1;
 }
 
-IR::Block* Structurer::UniqueMerge(IR::Block* merge) {
-    if (merge == nullptr) {
-        return merge;
-    }
-    if (merge_blocks.insert(merge).second) {
-        return merge;
-    }
-    IR::Block* const trampoline = NewBlock();
-    BranchTo(trampoline, merge);
-    AppendBlockNode(trampoline);
-    merge_blocks.insert(trampoline);
-    return trampoline;
+void Structurer::EmitReturn(IR::Block* from) {
+    // A return gets its own epilogue block, emitted right here: the SPIR-V backend branches a block
+    // to the next block node, so the return cannot be appended at the end of the program unless the
+    // block before it falls through to it.
+    IR::Block* const exit_block = NewBlock();
+    IR::IREmitter{*exit_block}.Epilogue();
+    BranchTo(from, exit_block);
+    AppendBlockNode(exit_block);
+    syntax_list.emplace_back().type = IR::AbstractSyntaxNode::Type::Return;
 }
 
 IR::Block* Structurer::EmitRange(u32 first, u32 last, IR::Block* merge) {
@@ -245,12 +271,56 @@ IR::Block* Structurer::EmitRange(u32 first, u32 last, IR::Block* merge) {
     while (index < last) {
         const ControlBlock& block = blocks[index];
         IR::Block* ir = entries[index];
+        if (loop_latch[index] != NO_LATCH && !emitting_loops.contains(index)) {
+            // A loop gets an empty header block so the Loop node can name a body, a continue block
+            // and a merge without the header's own terminator getting in the way.
+            const u32 latch = loop_latch[index];
+            if (appended[index]) {
+                error = "native loop header is also a merge block";
+                throw UnsupportedInstruction{};
+            }
+            if (latch >= last) {
+                error = "native loop crosses a region boundary";
+                throw UnsupportedInstruction{};
+            }
+            const bool own_merge = latch + 1 < last;
+            IR::Block* const loop_merge = own_merge ? entries[latch + 1] : merge;
+            IR::Block* const loop_header = NewBlock();
+            if (current != nullptr) {
+                BranchTo(current, loop_header);
+            }
+            AppendBlockNode(loop_header);
+            const size_t loop_index = syntax_list.size();
+            syntax_list.emplace_back().type = IR::AbstractSyntaxNode::Type::Loop;
+
+            emitting_loops.insert(index);
+            loops.push_back({loop_header, loop_merge, latch});
+            static_cast<void>(EmitRange(index, latch + 1, loop_merge));
+            loops.pop_back();
+            emitting_loops.erase(index);
+
+            IR::Block* const body_entry{syntax_list.at(loop_index + 1).data.block};
+            BranchTo(loop_header, body_entry);
+
+            auto& loop = syntax_list[loop_index];
+            loop.data.loop.body = body_entry;
+            loop.data.loop.continue_block = entries[latch];
+            loop.data.loop.merge = loop_merge;
+
+            if (own_merge) {
+                AppendBlockNode(loop_merge);
+                appended[latch + 1] = true;
+            }
+            index = latch + 1;
+            current = nullptr;
+            continue;
+        }
+        if (current != nullptr) {
+            BranchTo(current, ir);
+        }
         if (!appended[index]) {
             AppendBlockNode(ir);
             appended[index] = true;
-        }
-        if (current != nullptr && !Terminated(current)) {
-            BranchTo(current, ir);
         }
         TranslateRange(ir, block.begin, block.end);
         current = ir;
@@ -258,6 +328,28 @@ IR::Block* Structurer::EmitRange(u32 first, u32 last, IR::Block* merge) {
             return block.kind == ControlBlock::End::Conditional ? ConditionValue(*ir, block)
                                                                 : IR::U1{};
         }()};
+
+        if (index == (loops.empty() ? NO_LATCH : loops.back().latch)) {
+            // This block closes the loop: its back edge becomes the Repeat condition.
+            IR::U1 condition;
+            if (block.kind == ControlBlock::End::Conditional) {
+                condition = taken;
+            } else if (block.kind == ControlBlock::End::Branch) {
+                condition = IR::U1{IR::IREmitter{*ir}.Imm1(true)};
+            } else {
+                error = "native loop back edge is not a branch";
+                throw UnsupportedInstruction{};
+            }
+            const IR::U1 repeat_condition{IR::IREmitter{*ir}.ConditionRef(condition)};
+            auto& repeat = syntax_list.emplace_back();
+            repeat.type = IR::AbstractSyntaxNode::Type::Repeat;
+            repeat.data.repeat.cond = repeat_condition;
+            repeat.data.repeat.loop_header = loops.back().header;
+            repeat.data.repeat.merge = loops.back().merge;
+            current = nullptr;
+            ++index;
+            continue;
+        }
 
         switch (block.kind) {
         case ControlBlock::End::FallThrough:
@@ -268,13 +360,36 @@ IR::Block* Structurer::EmitRange(u32 first, u32 last, IR::Block* merge) {
             const auto [pred, negated] = block.cond.GetPred();
             const auto [extra_pred, extra_negated] = block.extra.GetPred();
             if (pred == IR::Pred::PT && !negated && extra_pred == IR::Pred::PT) {
-                BranchTo(ir, return_block);
+                // An unconditional exit ends the program here.
+                EmitReturn(ir);
                 return nullptr;
             }
-            IR::Block* skip = NewBlock();
-            EmitBreak(ir, ConditionValue(*ir, block), return_block, skip);
-            Terminate(ir);
+            // A conditional exit is a selection whose body returns: branching out of a selection to
+            // the return block is not structured, so the return is a block inside it.
+            IR::Block* const return_here = NewBlock();
+            IR::IREmitter{*return_here}.Epilogue();
+            IR::Block* const skip = NewBlock();
+            IR::IREmitter emitter{*ir};
+            const IR::U1 condition = emitter.ConditionRef(ConditionValue(*ir, block));
+
+            const size_t if_index = syntax_list.size();
+            syntax_list.emplace_back().type = IR::AbstractSyntaxNode::Type::If;
+            AppendBlockNode(return_here);
+            syntax_list.emplace_back().type = IR::AbstractSyntaxNode::Type::Return;
+            syntax_list.emplace_back().type = IR::AbstractSyntaxNode::Type::EndIf;
             AppendBlockNode(skip);
+
+            BranchTo(ir, return_here);
+            BranchTo(ir, skip);
+            Terminate(ir);
+
+            auto& if_node = syntax_list[if_index];
+            if_node.type = IR::AbstractSyntaxNode::Type::If;
+            if_node.data.if_node.cond = condition;
+            if_node.data.if_node.body = return_here;
+            if_node.data.if_node.merge = skip;
+            syntax_list[if_index + 2].data.end_if.merge = skip;
+
             current = skip;
             ++index;
             continue;
@@ -283,76 +398,76 @@ IR::Block* Structurer::EmitRange(u32 first, u32 last, IR::Block* merge) {
         case ControlBlock::End::Branch: {
             if (block.target == block.terminator) {
                 // A computed jump closes the program with a branch to itself.
-                BranchTo(ir, return_block);
+                EmitReturn(ir);
                 return nullptr;
             }
             const u32 target_block = BlockContaining(block.target);
             if (target_block >= last) {
                 BranchTo(ir, merge);
-                return nullptr;
+                return merge;
             }
-            error = "native branch into the middle of a region";
+            error = "native unconditional branch into the middle of a region";
             throw UnsupportedInstruction{};
         }
 
         case ControlBlock::End::Conditional: {
             const u32 target_block = BlockContaining(block.target);
             if (target_block >= last) {
-                // The guard leaves the region.
+                // The guard leaves the region; its merge is where this range is meant to continue.
                 IR::Block* skip = NewBlock();
                 EmitBreak(ir, taken, merge, skip);
+                Terminate(ir);
                 AppendBlockNode(skip);
                 current = skip;
                 ++index;
                 continue;
             }
-            // A diamond: taking the branch skips the body, so the fallthrough is the body. The
-            // block just before the target decides where both paths meet again.
-            u32 merge_block = target_block;
-            if (target_block > index + 1) {
-                const ControlBlock& previous = blocks[target_block - 1];
-                if (previous.kind == ControlBlock::End::Branch) {
-                    const u32 previous_target = BlockContaining(previous.target);
-                    if (previous_target > target_block && previous_target <= last) {
-                        merge_block = previous_target;
-                    }
-                }
+            if (target_block <= index) {
+                error = "native backward branch (loop) has no structuring yet";
+                throw UnsupportedInstruction{};
             }
-            IR::Block* const diamond_merge = UniqueMerge(entries[merge_block]);
+            if (target_block == index + 1) {
+                // Both arms meet at the next block, so the condition changes nothing.
+                ++index;
+                continue;
+            }
 
-            // Reserve the node with its final type now. A build that fails mid-diamond leaves this
-            // entry unfilled, and an entry typed as Block with a null block makes a partial syntax
-            // list look like it owns a block that was never created.
+            // A diamond: taking the branch skips the body, so the fallthrough is the body and the
+            // target is where the arms meet. The SPIR-V backend branches a block to the next block
+            // in the syntax list, so the merge is emitted immediately after the EndIf.
+            IR::Block* const branch_merge = entries[target_block];
             const size_t if_index = syntax_list.size();
             syntax_list.emplace_back().type = IR::AbstractSyntaxNode::Type::If;
             const size_t body_index = syntax_list.size();
 
-            static_cast<void>(EmitRange(index + 1, target_block, diamond_merge));
+            static_cast<void>(EmitRange(index + 1, target_block, branch_merge));
 
             IR::Block* const body_entry{syntax_list.at(body_index).data.block};
             IR::IREmitter emitter{*ir};
             const IR::U1 condition = emitter.ConditionRef(IR::U1{emitter.LogicalNot(taken)});
             BranchTo(ir, body_entry);
-            BranchTo(ir, diamond_merge);
+            BranchTo(ir, branch_merge);
             Terminate(ir);
 
             auto& if_node = syntax_list[if_index];
             if_node.type = IR::AbstractSyntaxNode::Type::If;
             if_node.data.if_node.cond = condition;
             if_node.data.if_node.body = body_entry;
-            if_node.data.if_node.merge = diamond_merge;
+            if_node.data.if_node.merge = branch_merge;
 
             auto& endif_node = syntax_list.emplace_back();
             endif_node.type = IR::AbstractSyntaxNode::Type::EndIf;
-            endif_node.data.end_if.merge = diamond_merge;
+            endif_node.data.end_if.merge = branch_merge;
 
-            // The else part follows the EndIf; the loop continues there and stops at the merge.
+            AppendBlockNode(branch_merge);
+            appended[target_block] = true;
             index = target_block;
+            current = nullptr;
             continue;
         }
         }
     }
-    if (current != nullptr && !Terminated(current)) {
+    if (current != nullptr) {
         BranchTo(current, merge);
     }
     return merge;
@@ -361,12 +476,13 @@ IR::Block* Structurer::EmitRange(u32 first, u32 last, IR::Block* merge) {
 bool Structurer::BuildImpl() {
     return_block = NewBlock();
     IR::IREmitter{*return_block}.Epilogue();
-    static_cast<void>(EmitRange(0, static_cast<u32>(blocks.size()), return_block));
-    if (!appended.back()) {
-        // Fall off the end of the program into the epilogue.
+    // A program that ends with an unconditional exit has already emitted its own epilogue; adding
+    // another one would leave a block with no predecessor, which the SSA pass removes while the
+    // syntax list keeps it.
+    if (EmitRange(0, static_cast<u32>(blocks.size()), return_block) != nullptr) {
+        AppendBlockNode(return_block);
+        syntax_list.emplace_back().type = IR::AbstractSyntaxNode::Type::Return;
     }
-    AppendBlockNode(return_block);
-    syntax_list.emplace_back().type = IR::AbstractSyntaxNode::Type::Return;
     return true;
 }
 

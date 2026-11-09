@@ -137,11 +137,35 @@ TEST_CASE("An unconditional exit ends the program", "[video_core][native][contro
     CHECK(nodes[2] == Type::Return);
 }
 
-TEST_CASE("A branch into an earlier block is refused", "[video_core][native][control]") {
-    // 0 NOP, 1 NOP, 2 BRA 0, 3 EXIT: a backward branch that is not the closing self-branch.
+TEST_CASE("A backward branch becomes a loop", "[video_core][native][control]") {
+    // 0 NOP, 1 NOP, 2 BRA 0, 3 EXIT: the back edge closes a loop whose header is block 0.
     Built built{std::vector<Instruction>{Nop, Nop, Branch(2, 0), Exit}};
+    INFO(built.structurer->Error());
+    REQUIRE(built.structurer->Build());
+
+    using Type = IR::AbstractSyntaxNode::Type;
+    const std::vector<Type> nodes{built.Nodes()};
+    // An empty header block carries the Loop node, so the body can start at the real one.
+    REQUIRE(nodes.size() == 7);
+    CHECK(nodes[0] == Type::Block); // the empty loop header
+    CHECK(nodes[1] == Type::Loop);
+    CHECK(nodes[2] == Type::Block); // the real header, and the latch
+    CHECK(nodes[3] == Type::Repeat);
+    CHECK(nodes[4] == Type::Block); // the merge, before the exit
+    CHECK(nodes[5] == Type::Block); // the epilogue
+    CHECK(nodes[6] == Type::Return);
+
+    const auto& loop = built.structurer->Syntax()[1].data.loop;
+    CHECK(loop.body == built.structurer->Syntax()[2].data.block);
+    CHECK(loop.continue_block == built.structurer->Syntax()[2].data.block);
+    CHECK(loop.merge == built.structurer->Syntax()[4].data.block);
+}
+
+TEST_CASE("Two back edges into one header are refused", "[video_core][native][control]") {
+    // 0 NOP, 1 @P0 BRA 0, 2 BRA 0, 3 EXIT: two continues share a header.
+    Built built{std::vector<Instruction>{Nop, Branch(1, 0, 0), Branch(2, 0), Exit}};
     CHECK_FALSE(built.structurer->Build());
-    CHECK(built.structurer->Error() == "native branch into the middle of a region");
+    CHECK(built.structurer->Error() == "native loop has more than one back edge");
 }
 
 TEST_CASE("A closing self-branch ends the program", "[video_core][native][control]") {

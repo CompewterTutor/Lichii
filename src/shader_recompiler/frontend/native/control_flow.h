@@ -82,7 +82,14 @@ public:
 private:
     struct UnsupportedInstruction {};
 
+    struct LoopContext {
+        IR::Block* header;
+        IR::Block* merge;
+        u32 latch;
+    };
+
     [[nodiscard]] bool Split();
+    void FindLoops();
     [[nodiscard]] bool BuildImpl();
 
     [[nodiscard]] IR::Block* NewBlock();
@@ -100,9 +107,8 @@ private:
     [[nodiscard]] IR::U1 ConditionValue(IR::Block& block, const ControlBlock& control);
     [[nodiscard]] u32 BlockContaining(u32 instruction) const;
     [[nodiscard]] IR::Block* EmitRange(u32 first, u32 last, IR::Block* merge);
-    /// SPIR-V allows a block to be the merge block of one header only. Two diamonds that converge on
-    /// the same block are such a case, so the second gets an empty block that branches to it.
-    [[nodiscard]] IR::Block* UniqueMerge(IR::Block* merge);
+    /// End the program at the given block: emit an epilogue block and a Return node after it.
+    void EmitReturn(IR::Block* from);
 
     Environment& env;
     std::span<const Ampere::Instruction> code;
@@ -118,8 +124,12 @@ private:
     std::string error;
     bool tolerant{};
     std::vector<Issue> issues;
-    std::set<IR::Block*> merge_blocks;
     std::set<IR::Block*> terminated;
+    /// Block index of each loop's back edge, by header; NO_LATCH when the block is not a header.
+    static constexpr u32 NO_LATCH = ~0u;
+    std::vector<u32> loop_latch;
+    std::set<u32> emitting_loops;
+    std::vector<LoopContext> loops;
 };
 
 } // namespace Shader::Native

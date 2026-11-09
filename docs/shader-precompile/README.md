@@ -78,10 +78,13 @@ Measured over all 4008 compute programs captured from Ocarina of Time: **3115 tr
 | indexed `LDC` modes, `IMAD` carry modes, `0x307`, `F2IP` | ~180 |
 
 - `shader-sweep <program> --native --output out.spv` compiles the native translation to SPIR-V.
-  **Nothing validates yet**, and the reason is precise: the structurer builds if/else diamonds only,
-  while every program in the corpus contains a loop (one backward branch and one `BSSY`). The next
-  task is loop structuring from the `BSSY` reconvergence regions, then the first `spirv-val` pass,
-  then `EDEN_NX2_NATIVE=1` on a real save for a screenshot A/B.
+  **All 3115 translating programs pass `spirv-val`.** The structurer emits the same block order the
+  SPIR-V backend branches through: merge blocks inline after `EndIf`, returning selections for a
+  conditional exit, and `Loop`/`Repeat` built from a back edge with a fresh header block.
+- Loops are rare here (196 of 4008 programs) and none of those translate yet, so loop structuring
+  has unit tests but no corpus coverage.
+- Next: textures (`TLD`/`TXQ`, most of the remaining 893), then `EDEN_NX2_NATIVE=1` on a real save
+  for a screenshot A/B.
 - Next: those families, then the first end-to-end compile (`spirv-val`), then `EDEN_NX2_NATIVE=1` on
   a real save for a screenshot A/B.
 - The `If` node a failed build leaves unfilled was a null-pointer trap for anything reading the

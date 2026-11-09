@@ -1031,3 +1031,39 @@ never created, which is where the phantom predecessor comes from.
   `Loop`/`Repeat` shape the SPIR-V backend needs, with a real condition on the repeat edge.
 - `SHADER_SWEEP_IR=1` prints the block graph (order, successors, predecessors), which is how the
   phantom predecessor was traced; it stays as a diagnostic, off by default.
+
+## 2026-11-09 - The structurer was fighting the backend's block ordering
+
+**3115 of 3115 translating programs now pass `spirv-val`** (was 0). The fix was not in the code the
+translator emits; the structurer was building a block graph that disagreed with the graph the SPIR-V
+backend actually emits.
+
+The backend's `Traverse` does not read `Block::AddBranch` at all. A `Block` syntax node emits
+`OpBranch` to **the next `Block` node in the syntax list**, and only `If`, `Loop`, `Repeat`, `Break`
+and `Return` nodes emit their own terminators. So every block's recorded successor must be the node
+that follows it. The old code broke that invariant three ways:
+
+- it placed trampoline blocks (`UniqueMerge`) at creation time, *before* the `If` node, so the `If`
+  header became the trampoline instead of the block holding the condition;
+- it appended the merge block wherever the enclosing loop reached it, not immediately after `EndIf`,
+  so the fallthrough branch went somewhere else;
+- an unconditional `EXIT` inside a body recorded a branch to the return block but emitted nothing,
+  and the following `EndIf` branched to the wrong target.
+
+The rule now: an `If`'s merge block node is emitted immediately after its `EndIf`, a `Return` gets
+its own epilogue block emitted in place, and a divergent tail is not emitted at all (otherwise the
+SSA pass removes the unreachable blocks from `program.blocks` while the syntax list keeps their
+nodes, and the last `OpLabel` gets result id 0).
+
+Two more findings:
+
+- A conditional `EXIT` cannot be a `Break` to the return block: branching out of a selection to a
+  block beyond its merge is "Selection must be structured". It becomes a selection whose body is a
+  return block (`If` + `Block(return)` + `Return` + `EndIf`).
+- Loops are rare in this corpus: only 196 of 4008 programs have a backward branch, and none of those
+  196 translate yet (they use textures). Loop structuring is now built from the back edge itself: the
+  target block is the header, a fresh empty block carries `Loop` so the header's own terminator does
+  not collide with it, the latch block is the continue block, and its back edge becomes `Repeat`.
+  A header with two back edges (two `continue`s) is refused rather than merged.
+
+Measurement: 3115 validated, 0 invalid, 893 still blocked on translation (textures dominate).
