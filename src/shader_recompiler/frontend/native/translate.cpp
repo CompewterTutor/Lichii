@@ -490,7 +490,8 @@ void Translator::EmitIntegerMultiplyAdd() {
         return;
     }
     const bool negate_c = current.Bits(75, 1) != 0;
-    if ((current.words[2] & ~0x2ffU) != 0x078e0000U) {
+    // Bit 75 is the addend's negation, already read above; the rest of the mode word is fixed.
+    if ((current.words[2] & ~(0x2ffU | 0x800U)) != 0x078e0000U) {
         throw Unsupported{"native IMAD carry mode"};
     }
     const IR::U32 a = Gpr(current.Bits(24, 8));
