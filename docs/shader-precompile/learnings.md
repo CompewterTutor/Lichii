@@ -1200,3 +1200,45 @@ with those three.
 
 Open: mesh/vertex native still shades some meshes too dark (the character in the Kokiri Forest save),
 so `EDEN_NX2_NATIVE` defaults to compute and fragment; `EDEN_NX2_NATIVE_STAGES=mesh,vertex` opts in.
+
+## 2026-11-09 - The merge to upstream's shader cache v2, and where graphics coverage actually stops
+
+The fork and upstream had both grown a pipeline precompilation scheme. Upstream's won: shader cache
+v2 records each pipeline as the guest environments its shaders were translated from, in an
+append-only log, with a driver layer on VK_KHR_pipeline_binary; `shader_warm` and `PrecacheShaders`
+build a title's pipelines before play starts. This branch's per-title key list, its prefetch path
+and `keylist_tool.py` were removed with the merge (213 upstream commits, 26 conflicting files).
+
+What moved and why:
+
+- **The native stream was already in the cache.** v2 stores a native program's captured
+  instructions (`ProgramRecord::native`) and rebuilds the lowered code from them, so the fork's
+  inline copy of the stream in the environment record was redundant. `MakeLoweredNativeCode` now
+  fills `LoweredNativeCode::native` from that span and the environment layout is upstream's again:
+  cache version stays 54, 53 and 52 stay compatible, and migration from an older cache works.
+  Live check on a warm cache: 87 graphics programs translate and 313 fall back, so the stream does
+  reach the frontend through the record.
+- **The debug server kept this branch's tools** (pause, resume, step, shader inventory, GPU memory
+  map, read and write GPU memory, input recording and playback) on upstream's server, which now
+  passes a client-gone signal to handlers.
+- **The lowering's indexed ULDC rules are upstream's**: an index register can align the offset, so
+  the indexed form accepts offsets the fork refused. The two tests that encoded the stricter rule
+  follow it.
+- Two MSVC STL problems surfaced and are fixed at the call sites: `std::ranges::find` instantiates
+  `_Find_vectorized`, which only accepts 1, 2, 4 and 8 byte elements and now sees a 12-byte
+  `StorageBufferAddr` and a 32-byte `PipelineRecord`.
+
+Graphic coverage, measured after the merge on the Kokiri Forest save:
+
+| Stage set | Translated | Fell back |
+|---|---|---|
+| `fragment` (with compute) | 87 | 313 |
+| `vertex,mesh` | 0 | 2 |
+
+Every vertex program in this title stops at `AST` (0x322) on its first instruction, so no mesh or
+vertex program reaches the frontend at all. The darker character seen earlier with
+`EDEN_NX2_NATIVE_STAGES=vertex,mesh` is pose and shadow: that run had no native programs either, and
+a run with the same stage set renders the character exactly as the baseline. So the "native mesh
+writes wrong attributes" hypothesis is untested rather than disproved: there is no translated mesh
+program to compare yet. `AST` (0x322), then `FRAG` (0x95b) and the extended integer compares
+(~84 fallbacks) are the gate.

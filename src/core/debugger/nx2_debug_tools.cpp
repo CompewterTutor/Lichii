@@ -190,9 +190,6 @@ json Status(ToolState& state, const json& params) {
             caches = {
                 {"graphics_pipelines", stats->graphics},
                 {"compute_pipelines", stats->compute},
-                {"keylist_graphics", stats->keylist_graphics},
-                {"keylist_compute", stats->keylist_compute},
-                {"keylist_contribution", stats->keylist_contribution},
                 {"built", stats->built},
                 {"evicted", stats->evicted},
                 {"prefetched", stats->prefetched},

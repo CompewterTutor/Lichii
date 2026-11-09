@@ -62,10 +62,6 @@ public:
     struct DebugCacheStats {
         std::size_t graphics{};
         std::size_t compute{};
-        std::size_t keylist_graphics{};
-        std::size_t keylist_compute{};
-        /// Rows no shared list has yet: what the contribution file holds.
-        std::size_t keylist_contribution{};
         u64 built{};
         u64 evicted{};
         u64 prefetched{};

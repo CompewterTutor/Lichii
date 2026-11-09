@@ -150,10 +150,8 @@ server is on but idle, its thread sleeps in `epoll`/IOCP.
 `GetAndResetPerfStats`, which would reset the Qt status bar's counters.
 
 **`status` state block.** Besides the boot and pacing fields, `status` carries a `caches` object
-from the rasterizer: current graphics and compute pipeline counts, key-list rows
-(`keylist_graphics`, `keylist_compute`, and `keylist_contribution` for the rows waiting in
-`keylist.contribution.bin`), and the
-`built`, `evicted`, `prefetched` and `prefetch_failed` counters. Counters are atomics updated where
+from the rasterizer: current graphics and compute pipeline counts and the `built`, `evicted`,
+`prefetched` and `prefetch_failed` counters. Counters are atomics updated where
 pipelines are created, evicted and drained, so the server thread reads them without touching the
 GPU thread's containers; `prefetch_failed` is read under its own mutex. `status` is read-only and
 never resets a counter, unlike `GetAndResetPerfStats`. Guest core registers are not exposed yet:

@@ -6,6 +6,12 @@ New entries go under `## [Unreleased]`; `tools/ci/bump-version.sh` turns them in
 
 ## [Unreleased]
 
+### Changed
+
+- The emulator is now on upstream's pipeline cache: pipelines are recorded and precached through the
+  shader cache v2 described above, which replaces the earlier per-title key list and its tools.
+  Existing caches keep working: this version still reads the two before it.
+
 ### Fixed
 
 - Mesh programs with more than one exit built invalid SPIR-V: only one of the mesh set-outputs
@@ -17,16 +23,13 @@ New entries go under `## [Unreleased]`; `tools/ci/bump-version.sh` turns them in
 
 ### Added
 
-- Per-title pipeline key lists: every pipeline the title builds is recorded as a row of shader
-  hashes plus fixed pipeline state, and matching pipelines are built on background workers before
-  the game asks for them, which removes most mid-game compilation stalls. Lists hold identifiers
-  only, never shader code, SPIR-V, driver data or environment blobs.
-- An LRU memory budget for the pipeline cache (1536 MB by default) replaces idle-frame mass
-  eviction. Measured on The Legend of Zelda: Ocarina of Time: 0 evictions in four minutes against
-  175 with the old policy. `EDEN_NX2_PIPELINE_EVICT=legacy` restores the old behaviour.
+- The shader cache records the guest environments a title's pipelines were translated from, in an
+  append-only log beside the driver's own pipeline binaries, and builds the title's pipelines before
+  play starts. Most mid-game compilation stalls are gone, and a later build reuses the driver's work
+  instead of recompiling it. Records hold the guest code and the values its translation read, never
+  SPIR-V.
 - `tools/nx2/shader_scan` extracts the shader programs inside a NUP container (BNSH, BAHS, NDSR
-  and NDVE), with `--extract` writing a manifest of programs and hashes for offline key-list work.
-- `tools/nx2/keylist_tool.py` inspects, merges and diffs key lists, with 12 unit tests.
+  and NDVE), with `--extract` writing a manifest of programs and hashes for offline work.
 - Debug server control tools, still opt-in through `EDEN_NX2_DEBUG_SERVER` and loopback only:
   `pause`, `resume`, `step` (present-granular), `input`, `input_sequence`, `input_record`,
   `input_playback`, guest and GPU memory read/write, `shaders`, `gpu_memory_map`, and screenshot
@@ -35,12 +38,8 @@ New entries go under `## [Unreleased]`; `tools/ci/bump-version.sh` turns them in
 
 ### Changed
 
-- `status` reports the pipeline cache counters (built, evicted, prefetched, prefetch failed) and the
-  key-list row counts next to the boot and pacing fields.
-- A session now writes the pipelines no shared list has into `keylist.contribution.bin` next to the
-  list, so players collecting the same title can merge what they found instead of overwriting each
-  other's list. `keylist_tool.py merge` already unions them, and merging twice changes nothing.
-  `status.caches.keylist_contribution` says how many rows are waiting to be merged.
+- `status` reports the pipeline cache counters (built, evicted, prefetched, prefetch failed) next to
+  the boot and pacing fields.
 
 ### Fixed
 

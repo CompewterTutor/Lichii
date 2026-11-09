@@ -1,10 +1,14 @@
 # Shader precompilation
 
-Goal: stop mid-game pipeline compilation stalls by porting switch2mac's shared pipeline key list to
-Lichii. A per-title list of shader content hashes plus fixed pipeline state is recorded while the
-title plays, then replayed into the pipeline cache on background workers before the game asks for
-those pipelines. Lists carry identifiers only: no shader code, SPIR-V, environments, driver data or
-`vulkan.bin`, so they stay shareable.
+Goal: stop mid-game pipeline compilation stalls. The delivery is the shared shader cache v2: a
+title's pipeline is recorded as the guest environments its shaders were translated from, held in an
+append-only log next to the old versioned cache, with a driver layer on `VK_KHR_pipeline_binary`, and
+`shader_warm`/`PrecacheShaders` build a title's pipelines before the game asks for them.
+
+An earlier design recorded a per-title key list of shader hashes plus fixed state and replayed it
+into the cache. Upstream's cache v2 does the same job from the recorded environments and keeps the
+driver's own work, so the merge to upstream removed the key list. `learnings.md` keeps what it
+taught.
 
 ## Files
 
@@ -15,26 +19,20 @@ those pipelines. Lists carry identifiers only: no shader code, SPIR-V, environme
 
 ## What works today
 
-- **Pipeline key lists.** Every pipeline the title builds is recorded into a per-title list, and
-  listed rows are rebuilt on background workers at boot. Verified on OoT. A session also writes
-  `keylist.contribution.bin` with only the rows the loaded list was missing, so collecting for a
-  shared list is a merge (`tools/nx2/keylist_tool.py merge`) rather than a whole-file replacement.
-- **Budget eviction.** The pipeline cache keeps an LRU memory budget (1536 MB by default) instead of
-  doing mass evictions on idle frames. Measured on OoT: 0 evictions in four minutes against 175
-  before. `EDEN_NX2_PIPELINE_EVICT=legacy` restores the old policy (diagnostic switch, does not
-  merge).
+- **Pipeline precompilation.** Pipelines build from the shader cache v2 log and the driver's
+  pipeline binaries; `PrecacheShaders` builds the title's before play starts, on every CPU thread.
+  The cache version is 54 and still reads 53 and 52, so an update keeps what the game has shown.
 - **Static inventory.** `tools/nx2/shader_scan` extracts the shader programs inside a NUP container
   and writes a manifest. OoT's dump holds 39,392 unique NVN2 programs (36,176 BNSH plus BAHS, NDSR
   and NDVE); an offline sweep lowers 38,801 of them, 1,776 compile and pass `spirv-val`, 68 refuse
   to lower, and 521 need runtime context. `.bphsh`/`.bphsc`/`.bphnm` are Havok physics, not
   shaders.
-- **List tooling.** `tools/nx2/keylist_tool.py` inspects, merges and diffs lists (12 tests), and
-  `tools/nx2/lower_operand_audit.py` reports the opcodes the lowering handles but the
-  register-pressure pass cannot yet shadow.
+- **Lowering audit.** `tools/nx2/lower_operand_audit.py` reports the opcodes the lowering handles
+  but the register-pressure pass cannot yet shadow.
 
 Static pre-lowering is not the delivery mechanism: lowering specialises on runtime uniform values
-and storage pointer types, so a key list of built pipelines, not a precompiled shader archive, is
-what gets shipped.
+and storage pointer types, so recorded environments and the driver's own binaries, not a precompiled
+shader archive, are what get shipped.
 
 ## Native frontend (phase 1.7)
 
@@ -121,16 +119,18 @@ switch: a proven effect ships unconditional.
 
 | Switch | Effect |
 |---|---|
-| `EDEN_NX2_KEYLIST=0` | Stop recording and prefetching. The list is on by default. |
-| `EDEN_NX2_KEYLIST_PREFETCH=0` | Keep recording, but do not build listed state variants early. |
-| `EDEN_NX2_PIPELINE_EVICT=legacy` | Old idle-frame mass eviction instead of the LRU budget. |
-| `EDEN_NX2_PIPELINE_BUDGET_MB=<n>` | Pipeline cache memory budget, default 1536. |
-| `EDEN_NX2_PRELOAD_ALL_PIPELINES=1` | Build every cached pipeline at boot, as before the key list. |
+| `EDEN_NX2_NATIVE=1` | Try the native frontend first; compute and fragment only by default. |
+| `EDEN_NX2_NATIVE_STAGES=<names>` | Which stages `EDEN_NX2_NATIVE` may translate: `vertex`, `tess-control`, `tess-eval`, `geometry`, `fragment`, `compute`, `vertex-a`, `task`, `mesh`. |
+| `EDEN_NX2_SPIRV_DUMP=<dir>` | Every emitted module as SPIR-V, plus each native program's captured stream as `<hash>_native.bin`. |
+| `EDEN_NX2_PIPELINE_BUILD_TRACE=<file>` | One `BEGIN`/`END` line per driver pipeline build and a `NATIVE` line per native attempt. |
+| `EDEN_NX2_SHADER_DUMP=<dir>` | Native programs with their header sidecars. |
+| `EDEN_NX2_REJECT_HASH=<hash>,...` | Treat those programs as unsupported, for a reversible A/B. |
+| `EDEN_NX2_PRELOAD_ALL_PIPELINES=1` | Build every cached pipeline at boot. |
 | `EDEN_NX2_PIPELINE_DIFF=1` | Log what splits a new pipeline from an earlier one that shares its shaders. |
 
 ## Open work
 
-- 1.3.2 load title shader programs at boot for key-list builds.
+- 1.3.2 load title shader programs at boot for precache builds.
 - 1.3.3 close the lowering gaps the OoT sweep found: 6 of the 68 programs that refused to lower now
   lower completely. The remaining groups are the multi-tap gather proofs, the uniform LEA carry,
   call linkage and a handful of opcodes that need a decode first. Findings and the exact instruction
