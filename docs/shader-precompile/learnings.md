@@ -1067,3 +1067,29 @@ Two more findings:
   A header with two back edges (two `continue`s) is refused rather than merged.
 
 Measurement: 3115 validated, 0 invalid, 893 still blocked on translation (textures dominate).
+
+## 2026-11-09 - Textures: operand packing, not the sample itself
+
+`TEX` (0xb60) was the largest remaining blocker (385 programs). The sample maps straight onto the
+IR `ImageSample*` family; the work is unpacking NVN2's operand list, which is the same packing the
+shipping lowering unpacks into Maxwell's coordinate and meta registers:
+
+- The list is **array index first, then coordinates, then LOD/bias, offsets and the depth
+  reference**. Values live in `Ra`/`Rb` as halves of the count (`in_a = (count + 1) / 2` for up to
+  four values, otherwise 4 in `Ra`). A source register of 255 is zero.
+- The dimension field is **not** Maxwell's enumeration: 0 1D, 1 2D, 2 3D, 3 CUBE, 4 ARRAY_1D,
+  5 ARRAY_2D, 6 unused, 7 ARRAY_CUBE. nvdisasm confirms it (field 1 prints `2D`, field 2 prints
+  `3D`).
+- An array coordinate is a **U16 converted to float** and appears last in the IR coordinate vector
+  while it is first in the native operand list.
+- LOD modes: 1 `LZ` is an explicit level 0, 2 `LB`/6 `LBA` are implicit with a bias, 3 `LL`/7 `LLA`
+  are explicit levels, 4/5 are invalid. The descriptor is a constant-buffer byte offset
+  (`bits(40, 13) * 4`), which is exactly the immediate handle the texture pass expects.
+- Split destinations (`second_dest` != 255) are ordinary: components 2 and 3 go to `second_dest`.
+  Only the four-component form needs the pair aligned, because it packs RG and BA.
+
+Coverage: 3115 -> 3441 translating, and all 3441 still pass `spirv-val`. 567 remain, now led by
+`TXQ` (0xb6f), `TLD` (0xb66), `TLD4` (0xb63) and 0xb97.
+
+`LDC.64` (the 64-bit indexed constant load) is added too: it fills a register pair from one
+`GetCbufU32x2`.

@@ -69,16 +69,17 @@ time, each with a captured instruction and its nvdisasm decode.
 
 ### Where it stands
 
-Measured over all 4008 compute programs captured from Ocarina of Time: **3115 translate end to end**
-(78%). The rest are blocked by textures and a few remaining forms.
+Measured over all 4008 compute programs captured from Ocarina of Time: **3441 translate end to end**
+(86%), and every one of those passes `spirv-val`. The rest are blocked by the remaining texture
+forms and a few small gaps.
 
 | blocker | programs |
 |---|---|
-| `TLD` (0xb60, 0xb66), `TXQ` (0xb6f, 0xb63) and 0xb97 | ~575 |
-| indexed `LDC` modes, `IMAD` carry modes, `0x307`, `F2IP` | ~180 |
+| `TXQ` (0xb6f), `TLD` (0xb66), `TLD4` (0xb63), 0xb97 | ~200 |
+| `IMAD`/`IADD3` carry modes, `0x307`, `F2IP` and friends | ~180 |
 
 - `shader-sweep <program> --native --output out.spv` compiles the native translation to SPIR-V.
-  **All 3115 translating programs pass `spirv-val`.** The structurer emits the same block order the
+  **All 3441 translating programs pass `spirv-val`.** The structurer emits the same block order the
   SPIR-V backend branches through: merge blocks inline after `EndIf`, returning selections for a
   conditional exit, and `Loop`/`Repeat` built from a back edge with a fresh header block.
 - Loops are rare here (196 of 4008 programs) and none of those translate yet, so loop structuring
