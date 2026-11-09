@@ -104,6 +104,7 @@ private:
     void EmitUniformAddThree();
     void EmitUniformEffectiveAddress();
     void EmitIndexedConstantLoad();
+    void EmitTextureFetch();
     void EmitWarpReduction();
     void EmitUniformMultiplyAddRegister();
     void EmitFloatMinMax();

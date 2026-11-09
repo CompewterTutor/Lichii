@@ -181,6 +181,10 @@ constexpr Instruction UniformEffectiveAddress{{0x10043891, 0x00000082, 0x0f8e303
 constexpr Instruction IndexedConstantLoad{{0x02027b82, 0x014001c0, 0x00000000, 0x000e2200}};
 /// REDUX.MAX UR14, R21
 constexpr Instruction WarpReduction{{0x150e73c4, 0x00000000, 0x00014000, 0x000e2600}};
+/// TEX.SCR.LZ R1, R0, R9, 0x0, 0xc, 2D, 0x1
+constexpr Instruction TextureFetch{{0x00017b60, 0x30000c09, 0x009e01ff, 0x000f4400}};
+/// @P4 LDC.64 R2, c[0x4][R10]
+constexpr Instruction IndexedConstantLoad64{{0x0a024b82, 0x01000000, 0x00000a00, 0x000e2400}};
 /// SGXT.U32 R5, R5, 0x1
 constexpr Instruction SignExtend{{0x0505781a, 0x00000001, 0x00000000, 0x004fe400}};
 /// IMAD.WIDE.U32 R10, R11, 0x10, R2
@@ -626,4 +630,21 @@ TEST_CASE("IMAD and IMNMX read a constant buffer source", "[video_core][native]"
     const Translated imnmx{IntegerMinMaxBuffer};
     REQUIRE(imnmx.Find(IR::Opcode::GetCbufU32) != nullptr);
     CHECK(imnmx.Find(IR::Opcode::SetRegister)->Arg(0).Reg() == IR::Reg::R7);
+}
+
+TEST_CASE("TEX samples a texture at level zero", "[video_core][native]") {
+    const Translated sample{TextureFetch};
+    const IR::Inst* const image{sample.Find(IR::Opcode::BoundImageSampleExplicitLod)};
+    REQUIRE(image != nullptr);
+    // The descriptor is at constant buffer byte offset 12 * 4; the sample is 2D at level zero.
+    CHECK(image->Arg(0).U32() == 12U * 4U);
+    CHECK(image->Flags<IR::TextureInstInfo>().type.Value() == Shader::TextureType::Color2D);
+    REQUIRE(sample.Find(IR::Opcode::SetRegister) != nullptr);
+    CHECK(sample.Find(IR::Opcode::SetRegister)->Arg(0).Reg() == IR::Reg::R1);
+}
+
+TEST_CASE("LDC.64 reads a constant pair", "[video_core][native]") {
+    const Translated load{IndexedConstantLoad64};
+    REQUIRE(load.Find(IR::Opcode::GetCbufU32x2) != nullptr);
+    CHECK(load.Count(IR::Opcode::SetRegister) == 2);
 }

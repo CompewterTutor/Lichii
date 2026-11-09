@@ -13,7 +13,7 @@ namespace {
 
 /// Opcodes whose IR translation is implemented. Every entry needs a test with a captured
 /// instruction: the ISA is undocumented, so "it looks like the Maxwell opcode" is not evidence.
-constexpr std::array<u32, 128> Implemented{
+constexpr std::array<u32, 129> Implemented{
     0x918,                                               // NOP
     0x220, 0x820, 0xa20, 0xc20,                          // FMUL
     0x221, 0x421, 0x621, 0x821, 0xa21, 0xc21, 0xe21,     // FADD
@@ -65,6 +65,7 @@ constexpr std::array<u32, 128> Implemented{
     0x806, 0x886,                                        // VOTE, VOTEU
     0x98e, 0x3a8, 0x9a8,                                 // REDG, ATOMG
     0x290, 0x891, 0x291,                                 // UIADD3 register, ULEA
+    0xb60,                                               // TEX
     0xb82,                                               // LDC with an indexed offset
     0x3c4,                                               // REDUX
     0x217, 0x817,                                        // IMNMX

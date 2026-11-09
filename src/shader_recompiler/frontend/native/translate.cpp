@@ -1931,8 +1931,10 @@ void Translator::EmitIndexedConstantLoad() {
     const u32 width = current.Bits(73, 3);
     const u32 mode_bits = current.Bits(78, 2);
     const u32 bank = ConstantBufferBank(current.Bits(54, 5));
-    if (width > 4 || (mode_bits != 0 && mode_bits != 2) || bank >= 18 ||
-        (current.words[2] & ~0xce00U) != 0 || (current.words[1] & 0xf800003fU) != 0) {
+    const u32 dest = current.Bits(16, 8);
+    if (width > 5 || (mode_bits != 0 && mode_bits != 2) || bank >= 18 ||
+        (current.words[2] & ~0xce00U) != 0 || (current.words[1] & 0xf800003fU) != 0 ||
+        (width == 5 && dest != 255 && (dest & 1) != 0)) {
         throw Unsupported{"native indexed constant load mode"};
     }
     const IR::U32 offset = ir.IAdd(Gpr(current.Bits(24, 8)), ir.Imm32(current.Bits(38, 16)));
@@ -1956,9 +1958,22 @@ void Translator::EmitIndexedConstantLoad() {
     case 3:
         WriteUint(IR::U32{ir.GetCbuf(index, address, 16, true)});
         return;
-    default:
+    case 4:
         WriteUint(IR::U32{ir.GetCbuf(index, address, 32, false)});
         return;
+    default: {
+        // A 64-bit constant pair.
+        const IR::Value pair{ir.GetCbuf(index, address, 64, false)};
+        if (dest == 255) {
+            return;
+        }
+        if (dest + 1 >= 246) {
+            throw Unsupported{"native indexed constant load destination"};
+        }
+        ir.SetReg(Register(dest), IR::U32{ir.CompositeExtract(pair, 0)});
+        ir.SetReg(Register(dest + 1), IR::U32{ir.CompositeExtract(pair, 1)});
+        return;
+    }
     }
 }
 
@@ -2004,6 +2019,179 @@ void Translator::EmitWarpReduction() {
         value = combine(value, other);
     }
     ir.SetReg(UniformRegister(target), value);
+}
+
+void Translator::EmitTextureFetch() {
+    // TEX (0xb60): a sample with the descriptor in a constant buffer and the operands packed in
+    // register pairs. The operand list is the array index first, then the coordinates, then the
+    // LOD/bias, the offsets and the depth reference, the same packing the shipping lowering
+    // unpacks into Maxwell TEX's coordinate and meta registers.
+    constexpr std::array<u32, 8> COORDINATE_COUNT{1, 2, 3, 3, 2, 3, 0, 4};
+    constexpr std::array<TextureType, 8> TEXTURE_TYPE{
+        TextureType::Color1D,      TextureType::Color2D,
+        TextureType::Color3D,      TextureType::ColorCube,
+        TextureType::ColorArray1D, TextureType::ColorArray2D,
+        TextureType::Color3D,      TextureType::ColorArrayCube,
+    };
+    const u32 dest = current.Bits(16, 8);
+    const u32 second_dest = current.Bits(64, 8);
+    const u32 source_a = current.Bits(24, 8);
+    const u32 source_b = current.Bits(32, 8);
+    const u32 dimension = current.Bits(61, 3);
+    const u32 mask = current.Bits(72, 4);
+    const u32 lod_mode = current.Bits(87, 3);
+    const bool depth_compare = current.Bits(78, 1) != 0;
+    const bool offsets = current.Bits(76, 1) != 0;
+    const bool split = second_dest != 255;
+    if (dimension == 6 || COORDINATE_COUNT[dimension] == 0) {
+        throw Unsupported{"native texture dimension"};
+    }
+    if (current.Bits(79, 1) != 0) {
+        throw Unsupported{"native half-precision texture result"};
+    }
+    if (current.Bits(81, 3) != 7 || current.Bits(77, 1) != 0 || current.Bits(59, 1) != 0 ||
+        current.Bits(60, 1) != 1 || current.Bits(40, 14) > 0x1fff || mask == 0 ||
+        (lod_mode == 4 || lod_mode == 5) || (depth_compare && mask != 1)) {
+        throw Unsupported{"native texture mode"};
+    }
+    const auto check_destination = [&](u32 target, u32 width) {
+        if (target != 255 && target + width > 245) {
+            throw Unsupported{"native texture destination"};
+        }
+    };
+    if (split && mask == 15) {
+        // All four components split into two pairs, one per destination register.
+        if ((second_dest & 1) != 0 || second_dest + 1 > 245) {
+            throw Unsupported{"native texture split destination"};
+        }
+        check_destination(dest, 1);
+    } else if (split) {
+        check_destination(dest, 1);
+        check_destination(second_dest, 1);
+    } else {
+        check_destination(dest, 3);
+    }
+
+    const u32 coordinates = COORDINATE_COUNT[dimension];
+    const bool has_lod = lod_mode == 2 || lod_mode == 3 || lod_mode == 6 || lod_mode == 7;
+    const u32 count = coordinates + (has_lod ? 1 : 0) + (offsets ? 1 : 0) +
+                      (depth_compare ? 1 : 0);
+    const u32 in_a = count <= 4 ? (count + 1) / 2 : 4;
+    const auto slot = [&](u32 i) -> u32 {
+        if (i < in_a) {
+            return source_a == 255 ? 255U : source_a + i;
+        }
+        return source_b == 255 ? 255U : source_b + (i - in_a);
+    };
+    const auto uint = [&](u32 index) -> IR::U32 {
+        return index == 255 ? ir.Imm32(0) : Gpr(index);
+    };
+    const auto floating = [&](u32 index) -> IR::F32 {
+        return IR::F32{ir.BitCast<IR::F32>(uint(index))};
+    };
+    const auto array_index = [&](u32 index) -> IR::F32 {
+        const IR::U32 value{uint(index)};
+        return IR::F32{ir.ConvertUToF(32, 16, IR::U32{ir.BitFieldExtract(value, ir.Imm32(0),
+                                                                        ir.Imm32(16))})};
+    };
+
+    IR::Value coords;
+    switch (dimension) {
+    case 0: // 1D
+        coords = floating(slot(0));
+        break;
+    case 1: // 2D
+        coords = ir.CompositeConstruct(floating(slot(0)), floating(slot(1)));
+        break;
+    case 2: // 3D
+    case 3: // CUBE
+        coords = ir.CompositeConstruct(floating(slot(0)), floating(slot(1)), floating(slot(2)));
+        break;
+    case 4: // ARRAY_1D: the array index comes first in the operand list
+        coords = ir.CompositeConstruct(floating(slot(1)), array_index(slot(0)));
+        break;
+    case 5: // ARRAY_2D
+        coords = ir.CompositeConstruct(floating(slot(1)), floating(slot(2)),
+                                       array_index(slot(0)));
+        break;
+    default: // ARRAY_CUBE
+        coords = ir.CompositeConstruct(floating(slot(1)), floating(slot(2)), floating(slot(3)),
+                                       array_index(slot(0)));
+        break;
+    }
+
+    u32 next = coordinates;
+    const IR::F32 bias{has_lod && (lod_mode == 2 || lod_mode == 6) ? floating(slot(next++))
+                                                                  : ir.Imm32(0.0f)};
+    const IR::F32 explicit_lod{has_lod && (lod_mode == 3 || lod_mode == 7) ? floating(slot(next++))
+                                                                           : ir.Imm32(0.0f)};
+    IR::Value offset;
+    if (offsets) {
+        const IR::U32 packed{uint(slot(next++))};
+        const auto extract = [&](u32 bit) -> IR::U32 {
+            return IR::U32{ir.BitFieldExtract(packed, ir.Imm32(bit), ir.Imm32(4), true)};
+        };
+        switch (dimension) {
+        case 0:
+        case 4:
+            offset = extract(0);
+            break;
+        case 1:
+        case 5:
+            offset = ir.CompositeConstruct(extract(0), extract(4));
+            break;
+        case 2:
+            offset = ir.CompositeConstruct(extract(0), extract(4), extract(8));
+            break;
+        default:
+            throw Unsupported{"native texture offset on a cube map"};
+        }
+    }
+    const IR::F32 dref{depth_compare ? floating(slot(next++)) : ir.Imm32(0.0f)};
+
+    IR::TextureInstInfo info{};
+    info.type.Assign(TEXTURE_TYPE[dimension]);
+    info.is_depth.Assign(depth_compare ? 1 : 0);
+    info.has_bias.Assign(lod_mode == 2 || lod_mode == 6 ? 1 : 0);
+    info.has_lod_clamp.Assign(0);
+    info.ndv_is_active.Assign(0);
+
+    const IR::Value handle{ir.Imm32(current.Bits(40, 13) * 4)};
+    const IR::Value sample{[&]() -> IR::Value {
+        if (depth_compare) {
+            if (lod_mode == 1 || lod_mode == 3 || lod_mode == 7) {
+                return ir.ImageSampleDrefExplicitLod(handle, coords, dref, explicit_lod, offset,
+                                                     info);
+            }
+            return ir.ImageSampleDrefImplicitLod(handle, coords, dref, bias, offset,
+                                                 ir.Imm32(0.0f), info);
+        }
+        if (lod_mode == 1) {
+            return ir.ImageSampleExplicitLod(handle, coords, ir.Imm32(0.0f), offset, info);
+        }
+        if (lod_mode == 3 || lod_mode == 7) {
+            return ir.ImageSampleExplicitLod(handle, coords, explicit_lod, offset, info);
+        }
+        return ir.ImageSampleImplicitLod(handle, coords, bias, offset, ir.Imm32(0.0f), info);
+    }()};
+
+    for (u32 element = 0; element < 4; ++element) {
+        if (((mask >> element) & 1) == 0) {
+            continue;
+        }
+        const IR::F32 value{depth_compare
+                                ? (element < 3 ? IR::F32{sample} : ir.Imm32(1.0f))
+                                : IR::F32{ir.CompositeExtract(sample, element)}};
+        const u32 target = !split ? (dest == 255 ? 255U : dest + element)
+                                  : (element < 2 ? (dest == 255 ? 255U : dest + element)
+                                                 : second_dest + (element - 2));
+        if (target != 255) {
+            if (target >= 246) {
+                throw Unsupported{"native texture destination"};
+            }
+            ir.SetReg(Register(target), ir.BitCast<IR::U32>(value));
+        }
+    }
 }
 
 void Translator::EmitUniformConstantLoad() {
@@ -2262,6 +2450,9 @@ void Translator::Emit() {
     case 0x891: // ULEA (immediate)
     case 0x291: // ULEA (register)
         EmitUniformEffectiveAddress();
+        return;
+    case 0xb60: // TEX
+        EmitTextureFetch();
         return;
     case 0xb82: // LDC with an indexed offset
         EmitIndexedConstantLoad();
