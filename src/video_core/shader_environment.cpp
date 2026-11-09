@@ -361,10 +361,6 @@ bool FileEnvironment::HasNativeInstructions() const {
     return Shader::Ampere::HasNativeAddressMap(code);
 }
 
-std::span<const Shader::Ampere::Instruction> FileEnvironment::NativeInstructions() const {
-    return native;
-}
-
 u64 GenericEnvironment::CalculateHash() const {
     const size_t size{ReadSizeBytes()};
     const auto data{std::make_unique<char[]>(size)};
@@ -402,15 +398,6 @@ void GenericEnvironment::Serialize(std::ostream& file, u32 read_properties) cons
                sizeof(viewport_transform_state))
         .write(reinterpret_cast<const char*>(&stage), sizeof(stage))
         .write(reinterpret_cast<const char*>(code.data()), code_size);
-    // The native stream follows the lowered code, so a warm pipeline cache can still build the
-    // program with the native frontend rather than only on the run that captured it.
-    const u64 native_count{lowered_native ? static_cast<u64>(lowered_native->native.size()) : 0};
-    file.write(reinterpret_cast<const char*>(&native_count), sizeof(native_count));
-    if (native_count != 0) {
-        file.write(reinterpret_cast<const char*>(lowered_native->native.data()),
-                   static_cast<std::streamsize>(native_count *
-                                                sizeof(Shader::Ampere::Instruction)));
-    }
     for (const auto& [key, type] : texture_types) {
         file.write(reinterpret_cast<const char*>(&key), sizeof(key))
             .write(reinterpret_cast<const char*>(&type), sizeof(type));
@@ -1239,22 +1226,6 @@ void FileEnvironment::Deserialize(std::istream& file, std::streampos end) {
     claim(num_cbuf_replacement_values, sizeof(u64) + sizeof(Shader::ReplaceConstant));
     code.resize(Common::DivCeil(code_size, sizeof(u64)));
     file.read(reinterpret_cast<char*>(code.data()), code_size);
-    u64 native_count{};
-    file.read(reinterpret_cast<char*>(&native_count), sizeof(native_count));
-    // The stream is at most one instruction per lowered word, and it must fit in what the record
-    // has left; anything else means this record was not written by this build.
-    const std::streampos after_count{file.tellg()};
-    if (!file || after_count < 0 || native_count > (u64{1} << 22) ||
-        native_count > code_size / sizeof(u64) ||
-        native_count * sizeof(Shader::Ampere::Instruction) >
-            static_cast<u64>(end - after_count)) {
-        throw std::ios_base::failure{"invalid native instruction count"};
-    }
-    native.resize(static_cast<size_t>(native_count));
-    if (native_count != 0) {
-        file.read(reinterpret_cast<char*>(native.data()),
-                  static_cast<std::streamsize>(native_count * sizeof(Shader::Ampere::Instruction)));
-    }
     for (size_t i = 0; i < num_texture_types; ++i) {
         u32 key;
         Shader::TextureType type;

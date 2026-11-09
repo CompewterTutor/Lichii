@@ -27,15 +27,12 @@ inline constexpr u32 OpenGLPipelineCacheVersion = 48;
 // fail one by one and their pipelines are built when the game uses them; a new version would
 // throw every record away instead. CompatibleVulkanPipelineCacheVersions lists the older versions
 // with this version's record layout.
-/// This fork's record layout carries the captured native instruction stream after each
-/// environment's lowered code, so records written by an upstream build (54 and older) do not
-/// decode here and none are compatible.
-inline constexpr u32 VulkanPipelineCacheVersion = 55;
+inline constexpr u32 VulkanPipelineCacheVersion = 54;
 
 /// Older Vulkan cache versions with this version's record layout, newest first. A build that
 /// finds no cache of its own version starts from the newest of these on disk, so an update keeps
 /// the pipelines the game has already shown.
-inline constexpr std::array<u32, 0> CompatibleVulkanPipelineCacheVersions{};
+inline constexpr std::array<u32, 2> CompatibleVulkanPipelineCacheVersions{53, 52};
 
 /// Header magic of the guest environment caches and of the Vulkan driver pipeline cache.
 inline constexpr std::array<char, 8> PipelineCacheMagic{'y', 'u', 'z', 'u', 'c', 'a', 'c', 'h'};
@@ -57,7 +54,7 @@ static_assert(IsOlderVersionList(CompatibleVulkanPipelineCacheVersions,
                                  VulkanPipelineCacheVersion));
 // A version with another record layout must not start from these: their files would be read as
 // its own. Check the list whenever the version changes, then update this.
-static_assert(VulkanPipelineCacheVersion == 55,
+static_assert(VulkanPipelineCacheVersion == 54,
               "Check CompatibleVulkanPipelineCacheVersions against the new version");
 
 // Official Eglantine (cache version 18 at c0cb3325) and this fork (a different version) both

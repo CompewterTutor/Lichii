@@ -49,10 +49,10 @@ struct MissingContext : std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 
-// Serialized environment layouts this tool reads. This fork's layout carries the captured native
-// instruction stream after each environment's code (see pipeline_cache_files.h).
+// Serialized environment layouts this tool reads. 54 has 53's layout (see
+// CompatibleVulkanPipelineCacheVersions in video_core/pipeline_cache_files.h).
 constexpr u32 OldestCacheVersion = 46;
-constexpr u32 NewestCacheVersion = 55;
+constexpr u32 NewestCacheVersion = 54;
 
 constexpr std::array StageNames{"vertex",  "tess-control", "tess-eval", "geometry", "fragment",
                                 "compute", "vertex-a",     "task",      "mesh"};

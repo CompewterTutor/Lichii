@@ -53,6 +53,9 @@ std::shared_ptr<LoweredNativeCode> MakeLoweredNativeCode(std::span<const Instruc
     result->texture_bound = lowered.required_texture_buffer;
     result->source_size = header_size + lowered.source_size;
     result->trap_prefix.assign(native.begin(), native.begin() + trap_count);
+    // Keep the captured stream so the native frontend can translate the program directly instead
+    // of the lowered Maxwell code; shader cache v2 records it, so this survives a warm cache.
+    result->native.assign(native.begin(), native.end());
     auto& lowered_code = result->code;
     lowered_code.resize(sizeof(sph) / sizeof(u64));
     std::memcpy(lowered_code.data(), &sph, sizeof(sph));

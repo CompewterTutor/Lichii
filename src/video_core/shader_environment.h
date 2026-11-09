@@ -306,8 +306,6 @@ public:
     }
     bool HasNativeInstructions() const override;
 
-    [[nodiscard]] std::span<const Shader::Ampere::Instruction> NativeInstructions() const override;
-
     void Dump(u64 pipeline_hash, u64 shader_hash) override;
 
     /// Whether the translator asked for a constant buffer value, texture or pointer classification
@@ -322,9 +320,6 @@ public:
 
 private:
     std::vector<u64> code;
-    /// The captured native instruction stream, carried through the pipeline cache so the native
-    /// frontend still runs when a program is rebuilt from disk instead of lowered again.
-    std::vector<Shader::Ampere::Instruction> native;
     ::Common::unordered_map<u32, Shader::TextureType> texture_types;
     ::Common::unordered_map<u32, Shader::TexturePixelFormat> texture_pixel_formats;
     ::Common::unordered_map<u64, u32> cbuf_values;

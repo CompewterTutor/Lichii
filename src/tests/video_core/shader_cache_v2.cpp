@@ -941,12 +941,10 @@ TEST_CASE("Shader cache v2: a program whose texture bound buffer alone moved is 
     REQUIRE(Vulkan::PipelineRecordKey<Vulkan::ComputePipelineCacheKey>(appends[1].payload)
                 ->unique_hash == current.unique_hash);
 }
-TEST_CASE("Shader cache v2: a previous Vulkan cache and its used list are migrated",
+TEST_CASE("Shader cache v2: an older Vulkan cache and its used list are migrated",
           "[video_core][shader_cache_v2]") {
     TempDir temp;
-    // This fork has no older cache version with its record layout, so the cache a previous build
-    // of the same layout leaves behind is the one migration has to take.
-    constexpr u32 Previous = VideoCommon::VulkanPipelineCacheVersion;
+    constexpr u32 Previous = 53;
     const auto legacy = VideoCommon::VersionedPipelineCachePath(temp.path, "vulkan", Previous);
     const auto log_file = temp.path / std::string{V2::FileName};
     TestEnvironment fragment{Shader::Stage::Fragment};
@@ -1032,15 +1030,13 @@ TEST_CASE("Shader cache v2: a previous Vulkan cache and its used list are migrat
     REQUIRE_FALSE(Vulkan::MigrateLegacyPipelineCache(temp.path, log_file, 16).version.has_value());
     REQUIRE(ReadAll(log_file) == log_bytes);
 
-    // The newest version first, in a directory of its own: this fork's cache version is the one
-    // just migrated, so reusing that directory would migrate its records again.
-    TempDir newest_dir;
+    // The newest version first
     const auto newer = VideoCommon::VersionedPipelineCachePath(
-        newest_dir.path, "vulkan", VideoCommon::VulkanPipelineCacheVersion);
+        temp.path, "vulkan", VideoCommon::VulkanPipelineCacheVersion);
     VideoCommon::SerializePipeline(second, fragment_envs, newer,
                                    VideoCommon::VulkanPipelineCacheVersion, ReadProperties);
-    const auto newer_log = newest_dir.path / "newer.bin";
-    const auto from_newer = Vulkan::MigrateLegacyPipelineCache(newest_dir.path, newer_log, 16);
+    const auto newer_log = temp.path / "newer.bin";
+    const auto from_newer = Vulkan::MigrateLegacyPipelineCache(temp.path, newer_log, 16);
     REQUIRE(from_newer.version == VideoCommon::VulkanPipelineCacheVersion);
     REQUIRE(from_newer.graphics == 1);
     REQUIRE(from_newer.used == 0);

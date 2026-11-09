@@ -35,8 +35,7 @@ T Get(std::span<const u8> data, size_t offset) {
     return value;
 }
 
-/// The GenericEnvironment::Serialize header: six u64 counts and seven u32 fields, then the code
-/// and the native instruction count (zero here: a precache record is only ever lowered).
+/// The GenericEnvironment::Serialize header: six u64 counts and seven u32 fields.
 void PutEnvHeader(std::vector<u8>& out, u64 code_size, u64 cbuf_count, u32 local_memory,
                   u32 texture_bound, u32 start_address, u32 stage) {
     Put<u64>(out, code_size);
@@ -125,14 +124,13 @@ std::optional<ComputeControl> ReadComputeControl(std::span<const u8> control) {
 std::vector<u8> ComputeEntry(const LoweredCode& lowered, const ComputeControl& control,
                              ComputeKey& key) {
     std::vector<u8> out;
-    out.reserve(4 + EnvHeaderSize + lowered.code.size() + 8 + 16 + key.size());
+    out.reserve(4 + EnvHeaderSize + lowered.code.size() + 16 + key.size());
     Put<u32>(out, 1);
     // Like InitializeNativeCode: the program's own bank when it names one.
     const u32 texture_bound = lowered.texture_buffer != ~0U ? lowered.texture_buffer : 0;
     PutEnvHeader(out, lowered.code.size(), 0, control.local_memory, texture_bound, 80,
                  ComputeStage);
     PutBytes(out, lowered.code);
-    Put<u64>(out, 0); // no captured native stream
     for (const u32 size : control.workgroup) {
         Put<u32>(out, size);
     }
