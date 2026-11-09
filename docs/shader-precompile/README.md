@@ -64,6 +64,9 @@ with `unsupported native opcode` means the control flow was fine and an instruct
 A program with an empty `unimplemented` list is fully covered. Opcodes are added one family at a
 time, each with a captured instruction and its nvdisasm decode.
 
+Current state on the captured OoT compute program: 1111 IR instructions emitted, 80 opcodes
+implemented, stopping at `0x292` (58% of the 1920 source instructions translated).
+
 To run the frontend for real, start the emulator with `EDEN_NX2_NATIVE=1`. The Vulkan pipeline cache
 then tries the native frontend first and falls back to the lowering for any program it cannot
 translate, logging `Native frontend: <hash> translated` or `... fell back (<reason>)` per shader. It

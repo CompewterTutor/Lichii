@@ -854,3 +854,22 @@ Numbers here come from two OoT sessions on the local machine (build `nx2-99ac3d5
 - Diagnostics: the translator's failures now carry the instruction index and opcode, and a type
   error thrown during IR construction is caught with the same context. Both were needed to find
   bugs in this batch at all.
+
+## 2026-11-09 - Native frontend: from 392 to 1111 IR instructions
+
+- The batch: IADD3.X (the chained add), LDG with a plain 64-bit register-pair address (0x381), USEL
+  (0x287/0x887), UIMAD (0x8a4) and the indexed ULDC (0xabb). Together they take the captured compute
+  program from 392 to 1111 emitted IR instructions — 58% of its 1920 source instructions — before the
+  next stop, `0x292`.
+- IADD3.X is settled by the lowering's own code, not by inference: it adds *two* carry predicates,
+  read from bits 77-79 and 87-89 with negation at 80 and 90. That matches the pair the producer
+  writes (high >= 1, high >= 2) and the captured `IADD3.X R5, RZ, UR7, RZ, P0, P1`, where bits 77-79
+  hold P1 and 87-89 hold P0.
+- The indexed ULDC's index register is a byte offset. Evidence: the lowering maps it to Maxwell LDC,
+  and `load_constant.cpp` computes `ir.IAdd(reg, imm_offset)` with no scaling. That settles the
+  question left open two batches ago, when guessing the units would have corrupted every load.
+- Learning: the biggest jumps came from *forms* of instructions already present (LDG address modes,
+  IADD3 carry chains, indexed constant loads), not from new opcodes. The histogram's "unimplemented"
+  count understates this: several of the forms were inside opcodes already marked implemented.
+- Diagnostics continue to pay: every bug in this batch (a missing dispatch case, a `Value` that
+  needed an explicit `IR::U32` wrapper) was found from one report line naming the instruction.

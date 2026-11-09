@@ -93,7 +93,9 @@ private:
     void EmitUniformShift();
     void EmitUniformSetPredicate();
     void EmitUniformAdd();
+    void EmitUniformSelect();
     void EmitUniformWideMultiplyAdd();
+    void EmitUniformMultiplyAdd();
     void EmitIntegerToFloat();
     void EmitUniformConstantLoad();
     [[nodiscard]] IR::U64 OffsetU64(u32 value, bool negative);

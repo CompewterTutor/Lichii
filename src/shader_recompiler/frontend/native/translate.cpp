@@ -491,6 +491,36 @@ void Translator::EmitLogicLut() {
 }
 
 void Translator::EmitIntegerAdd() {
+    // IADD3.X: the chained form. It adds two carry predicates into the sum, so a 64-bit add whose
+    // low half produced a carry count of 0, 1 or 2 continues correctly. The two sources are bits
+    // 77-79 and 87-89, each negatable at 80 and 90, the same fields the lowering adds.
+    if (current.Bits(74, 1) != 0) {
+        if (current.Bits(81, 6) != 0x3f) {
+            throw Unsupported{"native extended add carry mode"};
+        }
+        const auto carry_in = [&](u32 field, u32 negate) -> IR::U32 {
+            const u32 index = current.Bits(field, 3);
+            const bool negated = current.Bits(negate, 1) != 0;
+            const IR::U1 condition{index == 7
+                                       ? ir.Imm1(!negated)
+                                       : ir.GetPred(static_cast<IR::Pred>(index), negated)};
+            return IR::U32{ir.Select(condition, ir.Imm32(1), ir.Imm32(0))};
+        };
+        const IR::U32 a = Gpr(current.Bits(24, 8));
+        const IR::U32 b = Gpr(current.Bits(32, 8));
+        const IR::U32 c{current.Bits(64, 8) == 255 ? ir.Imm32(0) : Gpr(current.Bits(64, 8))};
+        const IR::U32 first = carry_in(77, 80);
+        const IR::U32 second = carry_in(87, 90);
+        const auto widen = [&](const IR::U32& value) {
+            return IR::U64{ir.PackUint2x32(ir.CompositeConstruct(value, ir.Imm32(0)))};
+        };
+        const IR::U64 sum{ir.IAdd(IR::U64{ir.IAdd(IR::U64{ir.IAdd(widen(a), widen(b))}, widen(c))},
+                                  IR::U64{ir.IAdd(widen(first), widen(second))})};
+        const IR::Value halves{ir.UnpackUint2x32(sum)};
+        WriteUint(IR::U32{ir.CompositeExtract(halves, 0)});
+        return;
+    }
+
     // IADD3: a + b + c, with up to two carry outputs. The lowering derives them from the 64-bit
     // sum: the first predicate is "high word >= 1" (a carry out), the second "high word >= 2"
     // (a carry out of both additions).
@@ -631,6 +661,53 @@ void Translator::EmitGlobalLoad() {
     const u32 address = current.Bits(24, 8);
     if (size > 6) {
         throw Unsupported{"native global load size"};
+    }
+    // Three addressing forms: a plain 64-bit register pair (0x381), a uniform base pair plus an
+    // optional register offset, or a cache descriptor in the uniform pair with the whole address in
+    // a register pair (desc[URn][Ra.64]).
+    if (current.Bits(0, 12) == 0x381) {
+        if ((current.words[2] & ~0x2e00U) != 0x001e8100U || (address & 1) != 0 || address >= 246) {
+            throw Unsupported{"native global load register address pair"};
+        }
+        const IR::U64 pointer{ir.PackUint2x32(
+            ir.CompositeConstruct(Gpr(address), Gpr(address + 1)))};
+        const u32 raw_offset = current.Bits(40, 24);
+        const s32 offset = static_cast<s32>(raw_offset << 8) >> 8;
+        const IR::U64 address64{
+            ir.IAdd(pointer, OffsetU64(static_cast<u32>(offset), offset < 0))};
+        const u32 dest_register = current.Bits(16, 8);
+        const Guard instruction_guard = DecodeGuard(current);
+        const auto store = [&](u32 index, const IR::U32& value) {
+            if (instruction_guard) {
+                const IR::U1 condition{ir.GetPred(
+                    static_cast<IR::Pred>(instruction_guard.index), instruction_guard.negated)};
+                const IR::Reg reg{Register(index)};
+                ir.SetReg(reg, IR::U32{ir.Select(condition, value, ir.GetReg(reg))});
+                return;
+            }
+            if (index != 255) {
+                ir.SetReg(Register(index), value);
+            }
+        };
+        switch (size) {
+        case 0:
+            store(dest_register, ir.LoadGlobalU8(address64));
+            return;
+        case 1:
+            store(dest_register, ir.LoadGlobalS8(address64));
+            return;
+        case 2:
+            store(dest_register, ir.LoadGlobalU16(address64));
+            return;
+        case 3:
+            store(dest_register, ir.LoadGlobalS16(address64));
+            return;
+        case 4:
+            store(dest_register, ir.LoadGlobal32(address64));
+            return;
+        default:
+            throw Unsupported{"native global load size"};
+        }
     }
     // Two addressing forms: a uniform base pair plus an optional register offset, or a cache
     // descriptor in the uniform pair and the whole address in a register pair (desc[URn][Ra.64]).
@@ -799,6 +876,26 @@ void Translator::EmitSharedMemory() {
     WriteUint(IR::U32{value});
 }
 
+void Translator::EmitUniformMultiplyAdd() {
+    // UIMAD: a 32-bit uniform multiply-add.
+    const u32 target = current.Bits(16, 8);
+    if (target >= NUM_UNIFORM_REGISTERS) {
+        throw Unsupported{"native uniform multiply mode"};
+    }
+    const IR::U32 product{ir.IMul(Uniform(current.Bits(24, 8)), ir.Imm32(current.words[1]))};
+    const u32 addend = current.Bits(64, 8);
+    IR::U32 value{ir.IAdd(product, addend == 255 ? ir.Imm32(0) : Uniform(addend))};
+    const u32 guard = current.Bits(12, 4);
+    if ((guard & 7) != 7) {
+        IR::U1 enabled = UniformPredicate(guard & 7);
+        if ((guard & 8) != 0) {
+            enabled = IR::U1{ir.LogicalNot(enabled)};
+        }
+        value = IR::U32{ir.Select(enabled, value, Uniform(target))};
+    }
+    ir.SetReg(UniformRegister(target), value);
+}
+
 void Translator::EmitUniformWideMultiplyAdd() {
     // UIMAD.WIDE.U32: a 64-bit multiply-add into a uniform register pair.
     const u32 target = current.Bits(16, 8);
@@ -824,6 +921,33 @@ void Translator::EmitUniformWideMultiplyAdd() {
     const IR::Value halves{ir.UnpackUint2x32(IR::U64{sum})};
     ir.SetReg(UniformRegister(target), IR::U32{ir.CompositeExtract(halves, 0)});
     ir.SetReg(UniformRegister(target + 1), IR::U32{ir.CompositeExtract(halves, 1)});
+}
+
+void Translator::EmitUniformSelect() {
+    // USEL: pick between two uniform sources on a uniform predicate.
+    const u32 target = current.Bits(16, 8);
+    const u32 condition = current.Bits(87, 3);
+    if (target >= NUM_UNIFORM_REGISTERS || condition >= NUM_UNIFORM_PREDICATES ||
+        (current.words[2] & ~0x07800000U) != 0x08000000U) {
+        throw Unsupported{"native uniform select mode"};
+    }
+    const IR::U32 a = Uniform(current.Bits(24, 8));
+    const IR::U32 b{current.Bits(0, 12) == 0x887 ? ir.Imm32(current.words[1])
+                                                 : Uniform(current.Bits(32, 8))};
+    IR::U1 select = UniformPredicate(condition);
+    if (current.Bits(90, 1) != 0) {
+        select = IR::U1{ir.LogicalNot(select)};
+    }
+    IR::U32 value{ir.Select(select, a, b)};
+    const u32 guard = current.Bits(12, 4);
+    if ((guard & 7) != 7) {
+        IR::U1 enabled = UniformPredicate(guard & 7);
+        if ((guard & 8) != 0) {
+            enabled = IR::U1{ir.LogicalNot(enabled)};
+        }
+        value = IR::U32{ir.Select(enabled, value, Uniform(target))};
+    }
+    ir.SetReg(UniformRegister(target), value);
 }
 
 void Translator::EmitUniformAdd() {
@@ -1116,27 +1240,43 @@ void Translator::EmitShuffleRegister() {
 }
 
 void Translator::EmitUniformConstantLoad() {
-    // ULDC: a constant buffer word or pair loaded into the uniform register file. The indexed form
-    // is not handled yet: its index register's units have not been confirmed against captured code.
+    // ULDC: a constant buffer word or pair into the uniform register file. The indexed form adds a
+    // uniform register to the byte offset, in bytes: the Maxwell LDC it lowers to does exactly that
+    // (`ir.IAdd(reg, imm_offset)` in load_constant.cpp), so the units are settled by that code.
+    const u32 opcode = current.Bits(0, 12);
     const u32 dest = current.Bits(16, 8);
     const u32 width = current.Bits(73, 3);
     const u32 offset = current.Bits(38, 16);
     const u32 bank = ConstantBufferBank(current.Bits(54, 5));
-    if (current.Bits(0, 12) != 0xab9) {
-        throw Unsupported{"native indexed uniform constant load"};
-    }
-    if (bank >= 18 || dest >= NUM_UNIFORM_REGISTERS || (width != 4 && width != 5)) {
+    const bool indexed = opcode == 0xabb;
+    if (indexed) {
+        if ((current.words[2] & ~0xe00U) != 0x08000000U) {
+            throw Unsupported{"native indexed uniform constant load mode"};
+        }
+    } else if (current.words[2] & ~0xe00U) {
         throw Unsupported{"native uniform constant load mode"};
     }
-    if (offset % (width == 5 ? 8U : 4U) != 0 ||
-        (width == 5 && dest + 1 >= NUM_UNIFORM_REGISTERS)) {
+    if (bank >= 18 || dest >= NUM_UNIFORM_REGISTERS ||
+        (width != 0 && width != 2 && width != 4 && width != 5)) {
+        throw Unsupported{"native uniform constant load mode"};
+    }
+    const u32 alignment = width == 0 ? 1U : width == 2 ? 2U : 4U;
+    if (offset % alignment != 0 || (width == 5 && dest + 1 >= NUM_UNIFORM_REGISTERS)) {
         throw Unsupported{"native uniform constant load alignment"};
     }
-    ir.SetReg(UniformRegister(dest), ir.GetCbuf(ir.Imm32(bank), ir.Imm32(offset)));
-    if (width == 5) {
-        ir.SetReg(UniformRegister(dest + 1),
-                  ir.GetCbuf(ir.Imm32(bank), ir.Imm32(offset + 4)));
+    IR::U32 address{ir.Imm32(offset)};
+    if (indexed) {
+        address = IR::U32{ir.IAdd(Uniform(current.Bits(24, 8)), address)};
     }
+    const IR::U32 binding = ir.Imm32(bank);
+    if (width == 5) {
+        ir.SetReg(UniformRegister(dest), IR::U32{ir.GetCbuf(binding, address, 32, false)});
+        ir.SetReg(UniformRegister(dest + 1),
+                  IR::U32{ir.GetCbuf(binding, IR::U32{ir.IAdd(address, ir.Imm32(4))}, 32, false)});
+        return;
+    }
+    ir.SetReg(UniformRegister(dest),
+              IR::U32{ir.GetCbuf(binding, address, width == 0 ? 8 : width == 2 ? 16 : 32, false)});
 }
 
 void Translator::EmitFloatAdd() {
@@ -1263,6 +1403,7 @@ void Translator::Emit() {
     case 0x308: // MUFU
         EmitMultiFunction();
         return;
+    case 0x381: // LDG with a register-pair address
     case 0x981: // LDG
         EmitGlobalLoad();
         return;
@@ -1280,8 +1421,15 @@ void Translator::Emit() {
     case 0x819: // SHF with an immediate shift
         EmitShift();
         return;
+    case 0x8a4: // UIMAD
+        EmitUniformMultiplyAdd();
+        return;
     case 0x8a5: // UIMAD.WIDE
         EmitUniformWideMultiplyAdd();
+        return;
+    case 0x287: // USEL
+    case 0x887: // USEL with an immediate
+        EmitUniformSelect();
         return;
     case 0x890: // UIADD3 with an immediate
         EmitUniformAdd();
