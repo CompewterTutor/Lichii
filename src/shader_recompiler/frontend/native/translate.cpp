@@ -491,8 +491,12 @@ void Translator::EmitLogicLut() {
 }
 
 void Translator::EmitIntegerAdd() {
-    // IADD3 with a zero third source and no carry outputs: the plain three-input add.
-    if ((current.words[2] & ~0xffU) != 0x07ffe000U) {
+    // IADD3: a + b + c, with up to two carry outputs. The lowering derives them from the 64-bit
+    // sum: the first predicate is "high word >= 1" (a carry out), the second "high word >= 2"
+    // (a carry out of both additions).
+    const u32 carry_low = current.Bits(81, 3);
+    const u32 carry_high = current.Bits(84, 3);
+    if ((current.words[2] & ~0xffU) != 0x07ffe000U && (current.words[2] & ~0xffU) != 0x0f91e000U) {
         throw Unsupported{"native add carry mode"};
     }
     const u32 opcode = current.Bits(0, 12);
@@ -517,7 +521,40 @@ void Translator::EmitIntegerAdd() {
             return Gpr(current.Bits(32, 8));
         }
     }()};
-    WriteUint(IR::U32{ir.IAdd(a, b)});
+    const bool no_third = current.Bits(64, 8) == 255;
+    if (no_third && carry_low == 7 && carry_high == 7) {
+        // The common two-input add needs no 64-bit intermediate at all.
+        WriteUint(IR::U32{ir.IAdd(a, b)});
+        return;
+    }
+    const IR::U32 c{no_third ? ir.Imm32(0) : Gpr(current.Bits(64, 8))};
+    const IR::U64 wide_a{ir.PackUint2x32(ir.CompositeConstruct(a, ir.Imm32(0)))};
+    const IR::U64 wide_b{ir.PackUint2x32(ir.CompositeConstruct(b, ir.Imm32(0)))};
+    const IR::U64 wide_c{ir.PackUint2x32(ir.CompositeConstruct(c, ir.Imm32(0)))};
+    const IR::Value wide{ir.IAdd(IR::U64{ir.IAdd(wide_a, wide_b)}, wide_c)};
+    const IR::Value halves{ir.UnpackUint2x32(IR::U64{wide})};
+    const IR::U32 high{ir.CompositeExtract(halves, 1)};
+    WriteUint(IR::U32{ir.CompositeExtract(halves, 0)});
+
+    const Guard guard = DecodeGuard(current);
+    const auto write_carry = [&](u32 target, const IR::U1& value) {
+        if (target == 7) {
+            return;
+        }
+        IR::U1 stored{value};
+        if (guard) {
+            stored = IR::U1{ir.Select(
+                ir.GetPred(static_cast<IR::Pred>(guard.index), guard.negated), stored,
+                ir.GetPred(static_cast<IR::Pred>(target)))};
+        }
+        ir.SetPred(static_cast<IR::Pred>(target), stored);
+    };
+    if (carry_low != 7) {
+        write_carry(carry_low, IR::U1{ir.INotEqual(high, ir.Imm32(0))});
+    }
+    if (carry_high != 7) {
+        write_carry(carry_high, IR::U1{ir.IGreaterThanEqual(high, ir.Imm32(2), false)});
+    }
 }
 
 void Translator::EmitPredicateToRegister() {
@@ -595,15 +632,31 @@ void Translator::EmitGlobalLoad() {
     if (size > 6) {
         throw Unsupported{"native global load size"};
     }
-    if ((current.words[2] & ~(0x04000000U | 0x3fU | 0xe00U)) != 0x081e8100U ||
-        current.Bits(38, 2) != 0) {
+    // Two addressing forms: a uniform base pair plus an optional register offset, or a cache
+    // descriptor in the uniform pair and the whole address in a register pair (desc[URn][Ra.64]).
+    const bool descriptor = (current.words[2] & ~(0x3fU | 0xe00U)) == 0x0c1e1100U ||
+                            current.words[2] == 0x0c1ebd00U;
+    // Bits 75-77 carry the memory ordering (.STRONG.SM, .CONSTANT ...); the address is the same.
+    // A strongly ordered load becomes a coherent one so the host does not cache it either.
+    const bool coherent = (current.words[2] & 0x2000U) != 0;
+    if (!descriptor &&
+        ((current.words[2] & ~(0x04000000U | 0x3fU | 0xe00U | 0x2c00U)) != 0x081e8100U ||
+         current.Bits(38, 2) != 0)) {
         throw Unsupported{"native global load uniform addressing mode"};
     }
-    const u32 uniform = current.Bits(32, 6);
-    const IR::U64 base = ir.PackUint2x32(
-        ir.CompositeConstruct(Uniform(uniform), Uniform(uniform + 1)));
-    IR::U64 pointer = base;
-    if (address != 255) {
+    if (descriptor && ((address & 1) != 0 || address >= 246)) {
+        throw Unsupported{"native global load register address pair"};
+    }
+    IR::U64 pointer{[&]() -> IR::U64 {
+        if (descriptor) {
+            return IR::U64{ir.PackUint2x32(
+                ir.CompositeConstruct(Gpr(address), Gpr(address + 1)))};
+        }
+        const u32 uniform = current.Bits(32, 6);
+        return IR::U64{ir.PackUint2x32(
+            ir.CompositeConstruct(Uniform(uniform), Uniform(uniform + 1)))};
+    }()};
+    if (!descriptor && address != 255) {
         // Bit 90 makes the register offset a 64-bit pair; otherwise it is zero-extended.
         const IR::U64 offset =
             current.Bits(90, 1)
@@ -630,22 +683,22 @@ void Translator::EmitGlobalLoad() {
     };
     switch (size) {
     case 0:
-        store(dest, ir.LoadGlobalU8(pointer));
+        store(dest, ir.LoadGlobalU8(pointer, coherent));
         return;
     case 1:
-        store(dest, ir.LoadGlobalS8(pointer));
+        store(dest, ir.LoadGlobalS8(pointer, coherent));
         return;
     case 2:
-        store(dest, ir.LoadGlobalU16(pointer));
+        store(dest, ir.LoadGlobalU16(pointer, coherent));
         return;
     case 3:
-        store(dest, ir.LoadGlobalS16(pointer));
+        store(dest, ir.LoadGlobalS16(pointer, coherent));
         return;
     case 4:
-        store(dest, ir.LoadGlobal32(pointer));
+        store(dest, ir.LoadGlobal32(pointer, coherent));
         return;
     case 5: {
-        const IR::Value pair{ir.LoadGlobal64(pointer)};
+        const IR::Value pair{ir.LoadGlobal64(pointer, coherent)};
         store(dest, IR::U32{ir.CompositeExtract(pair, 0)});
         store(dest + 1, IR::U32{ir.CompositeExtract(pair, 1)});
         return;

@@ -86,7 +86,9 @@ void Structurer::TranslateRange(IR::Block* block, u32 begin, u32 end) {
             throw UnsupportedInstruction{};
         }
         if (!translated) {
-            error = translator.Error();
+            // Name the instruction too: "unsupported native opcode" alone does not say where.
+            error = fmt::format("instruction {} ({:#05x}): {}", index, code[index].Bits(0, 12),
+                                translator.Error());
             throw UnsupportedInstruction{};
         }
     }

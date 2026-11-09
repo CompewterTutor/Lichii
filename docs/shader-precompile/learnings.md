@@ -835,3 +835,22 @@ Numbers here come from two OoT sessions on the local machine (build `nx2-99ac3d5
 - Coverage: 161 to 146 unimplemented instructions, 76 opcodes, and the structurer now emits 254 IR
   instructions. The program reaches its *first real form gap*: a global load whose word 2 is the
   descriptor form (`0x0c1e1100`) rather than the plain uniform-base form.
+
+## 2026-11-08 - Native frontend: the program reaches its 64-bit address chain
+
+- Coverage: 146 to 392 IR instructions emitted before the stop. The tail opcodes were the easy part;
+  what moved the number was getting the *forms* right.
+- LDG has a second addressing form the lowering rejects: `LDG.E.STRONG.SM Rd, [???255.64+UR12]`,
+  word 2 `0x0c1ea900`. The address is the same uniform pair; bits 75-77 carry the memory ordering
+  (`.STRONG.SM`, `.CONSTANT`) and are not part of it. Strongly ordered loads become coherent loads.
+  This is one of the programs the *lowering itself* cannot translate, so the native path is ahead of
+  it here rather than matching it.
+- IADD3 with carry outputs (word 2 `0x0f91e000`): the lowering derives the two predicates from the
+  64-bit sum as "high word >= 1" and "high word >= 2", which encodes a carry count of 0, 1 or 2. The
+  native path computes the same sum and derives the same two conditions.
+- The stop is now `IADD3.X R5, RZ, UR7, RZ, P0, P1` (instruction 47): the chained form that consumes
+  the pair as its carry-in. The carry count reading implies carry_in = P0 + P1, but that has not been
+  confirmed against captured consumers yet, so it is left refused.
+- Diagnostics: the translator's failures now carry the instruction index and opcode, and a type
+  error thrown during IR construction is caught with the same context. Both were needed to find
+  bugs in this batch at all.
