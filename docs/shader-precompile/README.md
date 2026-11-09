@@ -51,13 +51,13 @@ never depends on the host GPU: "native" means the guest instruction set, not the
 
 ```sh
 build-sweep/bin/shader-sweep <program.bin> --stage compute --format instructions --native
-# {"phase":"native","implemented_opcodes":88,"control_blocks":91,"ir_instructions":1397,
+# {"phase":"native","implemented_opcodes":106,"control_blocks":91,"ir_instructions":1828,
 #  "status":"blocked","error":{"code":"structure_failed",
-#                              "message":"instruction 161 (0x387): native local memory mode"}}
+#                              "message":"instruction 233 (0x3c4): unsupported native opcode 0x3c4"}}
 ```
 
-`EDEN_NX2_TRACE_INST=1` prints every instruction as it is translated, which is how the crash below
-was located.
+`--native-all` reports every blocked instruction in one pass instead of stopping at the first, which
+is how the remaining work is measured. The IR from a tolerant build is for coverage only.
 
 The report gives both answers: the opcode histogram says what is missing overall, and building the
 program for real says at which instruction the frontend actually stops. `control_blocks`,
@@ -69,22 +69,17 @@ time, each with a captured instruction and its nvdisasm decode.
 
 ### Where it stands
 
-The captured OoT compute program translates **1397 of its 1920 instructions** (73%) into structured
-IR before stopping, with 91 control blocks and correct if/else nesting. It has never been compiled
-to SPIR-V yet, because the stop is deliberate:
+The captured OoT compute program translates **14552 IR instructions across 106 opcodes**, stopping
+at instruction 233 (`REDUX.MAX`) with **37 blocked instruction instances left**. It has never been
+compiled to SPIR-V yet.
 
-- **Open bug.** Translating `STL` (0x387) exposes an access violation later in the same block, at
-  `CS2R R2, SRZ` (instruction 164). It is not a stack overflow, the IR for the STL completes, and
-  nothing is printed on the way down. Both `STL`/`LDL` and `CS2R` are therefore **refused**, not
-  shipped. Next step is a debugger or a checked build.
-
-  The rule behind that: the shader cache falls back on an *exception*. An access violation walks
-  past the handler and takes the emulator down, so a refusal (one program loses its fast path) is
-  always better than an uncaught fault (the game dies). A new translation is only safe to enable
-  when the process survives its failure.
-
-- After the crash: the remaining blocked instructions in program order, then the first end-to-end
-  compile (`spirv-val`), then `EDEN_NX2_NATIVE=1` on a real save for a screenshot A/B.
+- What is left is concentrated in warp operations and atomics: `VOTE`/`VOTEU`, `REDUX`, `ATOMG`,
+  `REDG`, plus `F2I`/`F2IP`, `ULEA`, `UIADD3.X`, `UIMAD` and `LDC.U8`.
+- Next: those families, then the first end-to-end compile (`spirv-val`), then `EDEN_NX2_NATIVE=1` on
+  a real save for a screenshot A/B.
+- The `If` node a failed build leaves unfilled was a null-pointer trap for anything reading the
+  syntax list; the structurer now types a reserved node immediately, and the sweep never
+  dereferences a block it did not create.
 
 To run the frontend for real, start the emulator with `EDEN_NX2_NATIVE=1`. The Vulkan pipeline cache
 then tries the native frontend first and falls back to the lowering for any program it cannot

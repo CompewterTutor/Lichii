@@ -69,7 +69,9 @@ private:
     [[nodiscard]] IR::U32 BitwiseLut3(u32 lut, const IR::U32& a, const IR::U32& b,
                                       const IR::U32& c);
     [[nodiscard]] IR::F32 ReadFloat(u32 which);
-    [[nodiscard]] IR::U32 ReadUint(u32 which);
+    /// `check_modifiers` is false where the source-modifier bits carry instruction flags instead
+    /// (ISETP's EX and signed bits).
+    [[nodiscard]] IR::U32 ReadUint(u32 which, bool check_modifiers = true);
     [[nodiscard]] IR::FpControl FloatControl() const;
     void WriteFloat(const IR::F32& value);
     void WriteUint(const IR::U32& value);
@@ -77,6 +79,8 @@ private:
     void EmitMove();
     void EmitSystemRegisterRead();
     void EmitSetPredicate();
+    void EmitSelectValue();
+    void EmitPopulationCount();
     void EmitIntegerMultiplyAdd();
     void EmitLogicLut();
     void EmitIntegerAdd();
@@ -89,6 +93,11 @@ private:
     void EmitCopySpecialToRegisterPair();
     void EmitShuffleRegister();
     void EmitFloatMinMax();
+    void EmitIntegerMinMax();
+    void EmitFindLeadingOne();
+    void EmitBitReverse();
+    void EmitPermuteBytes();
+    void EmitFunnelShift();
     void EmitShift();
     void EmitEffectiveAddress();
     void EmitRegisterToUniform();

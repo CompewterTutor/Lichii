@@ -127,6 +127,36 @@ constexpr Instruction IntegerAdd{{0x1d1e7210, 0x00000027, 0x07ffe0ff, 0x000fc800
 constexpr Instruction GlobalLoad{{0x00007981, 0x00000004, 0x081e8900, 0x000ea200}};
 /// ULDC.64 UR4, c[0x0][0x50]
 constexpr Instruction UniformConstantLoad{{0x00047ab9, 0x00001400, 0x00000a00, 0x000fe400}};
+/// POPC R21, R17
+constexpr Instruction PopulationCount{{0x00157309, 0x00000011, 0x00000000, 0x000e2200}};
+/// SEL R38, RZ, 0x1, P3
+constexpr Instruction Select{{0xff267807, 0x00000001, 0x01800000, 0x000fc800}};
+/// FSEL R42, R42, 0.9f, P6
+constexpr Instruction FloatSelect{{0x2a2a7808, 0x3f666666, 0x03000000, 0x000fe400}};
+/// FMNMX.FTZ R11, R11, 30, PT
+constexpr Instruction FloatMinMaxImmediate{{0x0b0b7809, 0x41f00000, 0x03810000, 0x000fe200}};
+/// IMNMX.U32 R29, R30, R29, PT
+constexpr Instruction IntegerMinMax{{0x1e1d7217, 0x0000001d, 0x03800000, 0x004fc800}};
+/// IMNMX.U32 R33, R17, 0xa000, PT
+constexpr Instruction IntegerMinMaxImmediate{{0x11217817, 0x0000a000, 0x03800000, 0x040fe400}};
+/// FLO.U32 R17, R17
+constexpr Instruction FindLeadingOne{{0x00117300, 0x00000011, 0x000e0000, 0x000fe400}};
+/// BREV R39, R38
+constexpr Instruction BitReverse{{0x00277301, 0x00000026, 0x00000000, 0x000e6200}};
+/// PRMT R17, R41, 0x5410, R42
+constexpr Instruction PermuteBytes{{0x29117816, 0x00005410, 0x0000002a, 0x001fe200}};
+/// SHF.L.U32.HI R0, RZ, R50, 0xffffffff  (shift saturates at 32: a register pass)
+constexpr Instruction FunnelShift{{0xff007419, 0xffffffff, 0x00010632, 0x000fe200}};
+/// IMAD R10, R50, R10, UR11
+constexpr Instruction ImadUniformAddend{{0x320a7e24, 0x0000000b, 0x0f8e020a, 0x000fca00}};
+/// IADD3 R40, R17, UR4, RZ
+constexpr Instruction IntegerAddUniform{{0x11287c10, 0x00000004, 0x0fffe0ff, 0x000fe400}};
+/// STG.E.64.STRONG.SM [R39.U32+UR10], R6
+constexpr Instruction GlobalStore64{{0x27007986, 0x00000006, 0x0810ab0a, 0x0001e200}};
+/// CS2R R2, SRZ
+constexpr Instruction CopySpecialToPair{{0x00027805, 0x00000000, 0x0001ff00, 0x000fe200}};
+/// STL [RZ], R3
+constexpr Instruction StoreLocal{{0xff007387, 0x00000003, 0x00100800, 0x0001e800}};
 
 } // Anonymous namespace
 
@@ -356,4 +386,103 @@ TEST_CASE("Uniform predicates fold into a predicate LUT", "[video_core][native]"
         }
     }
     CHECK(read_uniform_predicate);
+}
+
+
+TEST_CASE("POPC, SEL and FSEL translate", "[video_core][native]") {
+    const Translated popcount{PopulationCount};
+    REQUIRE(popcount.Find(IR::Opcode::BitCount32) != nullptr);
+    CHECK(popcount.Find(IR::Opcode::SetRegister)->Arg(0).Reg() == IR::Reg::R21);
+
+    const Translated select{Select};
+    const IR::Inst* chosen = select.Find(IR::Opcode::SelectU32);
+    REQUIRE(chosen != nullptr);
+    const IR::Inst* condition = select.Find(IR::Opcode::GetPred);
+    REQUIRE(condition != nullptr);
+    CHECK(condition->Arg(0).Pred() == IR::Pred::P3);
+    CHECK(select.Find(IR::Opcode::SetRegister)->Arg(0).Reg() == IR::Reg::R38);
+
+    const Translated floating{FloatSelect};
+    REQUIRE(floating.Find(IR::Opcode::SelectF32) != nullptr);
+}
+
+TEST_CASE("FMNMX and IMNMX translate", "[video_core][native]") {
+    const Translated floating{FloatMinMaxImmediate};
+    REQUIRE(floating.Find(IR::Opcode::SelectF32) != nullptr);
+    CHECK(floating.Count(IR::Opcode::FPMin32) == 1);
+    CHECK(floating.Count(IR::Opcode::FPMax32) == 1);
+    CHECK(floating.Find(IR::Opcode::SetRegister)->Arg(0).Reg() == IR::Reg::R11);
+
+    const Translated integer{IntegerMinMax};
+    REQUIRE(integer.Find(IR::Opcode::UMin32) != nullptr);
+    REQUIRE(integer.Find(IR::Opcode::UMax32) != nullptr);
+    CHECK(integer.Find(IR::Opcode::SetRegister)->Arg(0).Reg() == IR::Reg::R29);
+
+    const Translated immediate{IntegerMinMaxImmediate};
+    CHECK(immediate.Find(IR::Opcode::SetRegister)->Arg(0).Reg() == IR::Reg::R33);
+}
+
+TEST_CASE("FLO and BREV translate", "[video_core][native]") {
+    const Translated leading{FindLeadingOne};
+    REQUIRE(leading.Find(IR::Opcode::FindUMsb32) != nullptr);
+    CHECK(leading.Find(IR::Opcode::SetRegister)->Arg(0).Reg() == IR::Reg::R17);
+
+    const Translated reverse{BitReverse};
+    REQUIRE(reverse.Find(IR::Opcode::BitReverse32) != nullptr);
+    CHECK(reverse.Find(IR::Opcode::SetRegister)->Arg(0).Reg() == IR::Reg::R39);
+}
+
+TEST_CASE("PRMT translates to a byte permute", "[video_core][native]") {
+    const Translated permute{PermuteBytes};
+    CHECK(permute.Count(IR::Opcode::BitFieldInsert) == 4);
+    CHECK(permute.Find(IR::Opcode::SetRegister)->Arg(0).Reg() == IR::Reg::R17);
+}
+
+TEST_CASE("SHF.L.U32.HI saturates its shift", "[video_core][native]") {
+    const Translated funnel{FunnelShift};
+    // A saturated shift of 32 leaves the low word in the high half, so the value passes through.
+    const IR::Inst* store = funnel.Find(IR::Opcode::SetRegister);
+    REQUIRE(store != nullptr);
+    CHECK(store->Arg(0).Reg() == IR::Reg::R0);
+    REQUIRE(funnel.Find(IR::Opcode::GetRegister) != nullptr);
+    CHECK(funnel.Find(IR::Opcode::GetRegister)->Arg(0).Reg() == IR::Reg::R50);
+}
+
+TEST_CASE("IMAD and IADD3 take a uniform source", "[video_core][native]") {
+    const Translated multiply{ImadUniformAddend};
+    // UR11 sits at the uniform bank base plus eleven, so a read of it is a GetRegister with that
+    // index; the product itself is an ordinary 32-bit multiply.
+    bool saw_uniform_read{};
+    for (const IR::Inst& inst : multiply.block) {
+        if (inst.GetOpcode() == IR::Opcode::GetRegister &&
+            static_cast<u32>(inst.Arg(0).Reg()) == 512 + 11) {
+            saw_uniform_read = true;
+        }
+    }
+    CHECK(saw_uniform_read);
+    CHECK(multiply.Find(IR::Opcode::IMul32) != nullptr);
+    CHECK(multiply.Find(IR::Opcode::SetRegister)->Arg(0).Reg() == IR::Reg::R10);
+
+    const Translated add{IntegerAddUniform};
+    CHECK(add.Find(IR::Opcode::IAdd32) != nullptr);
+    CHECK(add.Find(IR::Opcode::SetRegister)->Arg(0).Reg() == IR::Reg::R40);
+}
+
+TEST_CASE("STG.E.64 writes a register pair", "[video_core][native]") {
+    const Translated store{GlobalStore64};
+    const IR::Inst* wide = store.Find(IR::Opcode::WriteGlobal64);
+    REQUIRE(wide != nullptr);
+    CHECK(store.Count(IR::Opcode::WriteGlobal32) == 0);
+}
+
+TEST_CASE("CS2R zero idiom and STL translate", "[video_core][native]") {
+    const Translated copy{CopySpecialToPair};
+    CHECK(copy.Count(IR::Opcode::SetRegister) == 2);
+    const IR::Inst* first = copy.Find(IR::Opcode::SetRegister);
+    REQUIRE(first != nullptr);
+    CHECK(first->Arg(0).Reg() == IR::Reg::R2);
+    CHECK(first->Arg(1).IsImmediate());
+
+    const Translated local{StoreLocal};
+    REQUIRE(local.Find(IR::Opcode::WriteLocal) != nullptr);
 }

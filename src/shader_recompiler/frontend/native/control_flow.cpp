@@ -76,21 +76,28 @@ void Structurer::TranslateRange(IR::Block* block, u32 begin, u32 end) {
     Translator translator{env, *block};
     for (u32 index = begin; index < end; ++index) {
         bool translated{};
+        std::string failure;
         try {
             translated = translator.Translate(code[index]);
         } catch (const std::exception& exception) {
-            // A type or consistency failure inside IR construction: name the instruction so the
-            // report points at the word that caused it, not at the whole program.
-            error = fmt::format("instruction {} ({:#05x}): {}", index, code[index].Bits(0, 12),
-                                exception.what());
-            throw UnsupportedInstruction{};
+            // A type or consistency failure inside IR construction.
+            failure = exception.what();
         }
-        if (!translated) {
-            // Name the instruction too: "unsupported native opcode" alone does not say where.
-            error = fmt::format("instruction {} ({:#05x}): {}", index, code[index].Bits(0, 12),
-                                translator.Error());
-            throw UnsupportedInstruction{};
+        if (translated) {
+            continue;
         }
+        if (failure.empty()) {
+            failure = translator.Error();
+        }
+        // Name the instruction: "unsupported native opcode" alone does not say where it is.
+        if (tolerant) {
+            issues.push_back(
+                {index, fmt::format("instruction {} ({:#05x}): {}", index, code[index].Bits(0, 12),
+                                    failure)});
+            continue;
+        }
+        error = fmt::format("instruction {} ({:#05x}): {}", index, code[index].Bits(0, 12), failure);
+        throw UnsupportedInstruction{};
     }
 }
 
@@ -298,8 +305,11 @@ IR::Block* Structurer::EmitRange(u32 first, u32 last, IR::Block* merge) {
             }
             IR::Block* const diamond_merge = entries[merge_block];
 
+            // Reserve the node with its final type now. A build that fails mid-diamond leaves this
+            // entry unfilled, and an entry typed as Block with a null block makes a partial syntax
+            // list look like it owns a block that was never created.
             const size_t if_index = syntax_list.size();
-            syntax_list.emplace_back();
+            syntax_list.emplace_back().type = IR::AbstractSyntaxNode::Type::If;
             const size_t body_index = syntax_list.size();
 
             static_cast<void>(EmitRange(index + 1, target_block, diamond_merge));

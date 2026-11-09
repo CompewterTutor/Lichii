@@ -62,6 +62,22 @@ public:
         return blocks;
     }
 
+    /// Diagnostic mode: an instruction without a translation is recorded and skipped instead of
+    /// failing the build, so one run lists every blocked instruction in the program. The IR a
+    /// tolerant build produces is not valid output: coverage reporting only.
+    void SetTolerant(bool value) noexcept {
+        tolerant = value;
+    }
+
+    struct Issue {
+        u32 instruction;
+        std::string message;
+    };
+
+    [[nodiscard]] const std::vector<Issue>& Issues() const noexcept {
+        return issues;
+    }
+
 private:
     struct UnsupportedInstruction {};
 
@@ -89,6 +105,8 @@ private:
     /// The translator builds some of its messages at runtime, so the structurer has to own a copy:
     /// keeping a string_view would dangle as soon as the translator goes out of scope.
     std::string error;
+    bool tolerant{};
+    std::vector<Issue> issues;
 };
 
 } // namespace Shader::Native

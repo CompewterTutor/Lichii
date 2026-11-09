@@ -530,6 +530,7 @@ int main(int argc, char** argv) {
         bool lower_only{};
         bool capture_extent{};
         bool native_report{};
+        bool native_tolerant{};
         for (int i = 1; i < argc; ++i) {
             const std::string arg{argv[i]};
             if (arg == "--help") {
@@ -554,6 +555,12 @@ int main(int argc, char** argv) {
             }
             if (arg == "--native") {
                 native_report = true;
+                continue;
+            }
+            if (arg == "--native-all") {
+                // Coverage mode: list every blocked instruction instead of stopping at the first.
+                native_report = true;
+                native_tolerant = true;
                 continue;
             }
             if (++i == argc)
@@ -675,16 +682,28 @@ int main(int argc, char** argv) {
                 Shader::ObjectPool<Shader::IR::Inst> inst_pool{256};
                 Shader::ObjectPool<Shader::IR::Block> block_pool{64};
                 Shader::Native::Structurer structurer{env, native, inst_pool, block_pool};
+                structurer.SetTolerant(native_tolerant);
                 const bool structured = structurer.Build();
                 std::size_t ir_instructions{};
                 for (const auto& node : structurer.Syntax()) {
-                    if (node.type == Shader::IR::AbstractSyntaxNode::Type::Block) {
+                    // A build that failed leaves later nodes unfilled, so only count blocks that
+                    // were actually created.
+                    if (node.type == Shader::IR::AbstractSyntaxNode::Type::Block &&
+                        node.data.block != nullptr) {
                         ir_instructions += node.data.block->size();
                     }
                 }
                 diagnostic["control_blocks"] = structurer.Blocks().size();
                 diagnostic["syntax_nodes"] = structurer.Syntax().size();
                 diagnostic["ir_instructions"] = ir_instructions;
+                if (!structurer.Issues().empty()) {
+                    Json blocked = Json::array();
+                    for (const auto& issue : structurer.Issues()) {
+                        blocked.push_back({{"instruction", issue.instruction},
+                                           {"message", issue.message}});
+                    }
+                    diagnostic["blocked_instructions"] = std::move(blocked);
+                }
                 if (structured) {
                     diagnostic["status"] = missing.empty() ? "ok" : "blocked";
                     diagnostic["error"] = {{"code", "translation_incomplete"}};

@@ -889,3 +889,33 @@ Numbers here come from two OoT sessions on the local machine (build `nx2-99ac3d5
 - The crash itself is not yet explained. What is known: it needs both the STL translation and CS2R to
   be reached, it is an access violation rather than a stack overflow, and the translator's own prints
   show the IR for 161 completing. The next step is a debugger or a checked build, not more printing.
+
+## 2026-11-09 - The "translator crash" was a report bug, and 44 more instructions
+
+- The access violation past `STL` was **not** in the translator. `Structurer` reserves the `If` node
+  with `syntax_list.emplace_back()` before filling it in; `AbstractSyntaxNode`'s `type` defaults to
+  `Block` and `data` zero-initialises to a null block pointer. When a later instruction failed, the
+  unfilled node stayed in the list, and `shader-sweep` counted IR with `node.data.block->size()` -
+  a null dereference. Anything that read a partially built syntax list would have done the same.
+  Fixed at the source (the reserved node is typed `If` immediately) and in the report (a null block
+  is never dereferenced). The translator, `STL`/`LDL` and `CS2R` are all fine and are now enabled.
+- Locating it took a linker map, not symbols: `/MAP` added to the existing link line, a
+  `SetUnhandledExceptionFilter` that prints `RtlCaptureStackBackTrace` addresses, and the map's
+  `Rva+Base` column to name the frame. `main + 0x3962` was enough to find it, because the faulting
+  code was inlined into `main`.
+- New diagnostic: `shader-sweep --native-all` records every blocked instruction and keeps going
+  (`Structurer::SetTolerant`). A program that stops at the first refusal hides the shape of the work;
+  one tolerant run listed all 69 blocked instructions of the captured program at once. The IR from a
+  tolerant build is not valid output and the flag only exists in the sweep.
+- Field layouts confirmed with nvdisasm before use: `IMNMX` (dest 16-23, bit 73 signed, predicate
+  87-90 - bits 72-73 are the instruction's own flags, not source modifiers, which is also why `ISETP`
+  was failing "integer source modifier": its `EX` bit lands where the generic decode expects `abs`),
+  `POPC` (tilde is bit 63), `SEL`/`FSEL` (predicate 87-89, negation 90), `PRMT` (selector in word 1,
+  second source 64-71), `SHF.L.U32.HI` (shift in word 1, `.W` in bit 75 wraps the shift to five bits,
+  otherwise it saturates at 32, so the `0xffffffff` idiom is a register pass).
+- Uniform-source forms mark bit 91, which several emitters were rejecting as an unknown mode bit:
+  `FFMA` (0xe23), `LEA` (0xc11) and `IADD3` (0xc10). That one bit explained three separate refusals.
+- Coverage on the captured OoT compute program: 14552 emitted IR instructions, 106 opcodes, and 69
+  blocked instruction instances down to 37. Remaining work is concentrated: `VOTE`/`VOTEU`,
+  `ATOMG`/`REDG`/`REDUX` (warp- and memory-atomics), `F2I`/`F2IP`, `ULEA`, `UIADD3.X`, `UIMAD`,
+  `LDC.U8`.

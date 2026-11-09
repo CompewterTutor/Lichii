@@ -133,12 +133,12 @@ IR::F32 Translator::ReadFloat(u32 which) {
     return ir.FPAbsNeg(value, source.absolute, source.negate);
 }
 
-IR::U32 Translator::ReadUint(u32 which) {
+IR::U32 Translator::ReadUint(u32 which, bool check_modifiers) {
     const auto [source, error] = DecodeSource(current, which);
     if (!error.empty()) {
         throw Unsupported{error};
     }
-    if (source.absolute || source.negate) {
+    if (check_modifiers && (source.absolute || source.negate)) {
         throw Unsupported{"native integer source modifier"};
     }
     switch (source.kind) {
@@ -304,6 +304,36 @@ void Translator::EmitSystemRegisterRead() {
     ir.SetReg(UniformRegister(target), value);
 }
 
+void Translator::EmitSelectValue() {
+    // SEL / FSEL: choose between two sources on a predicate. The predicate index is bits 87-89 with
+    // a negation flag in bit 90 (confirmed with nvdisasm), and the sources are the ordinary ALU
+    // sources, so every form reuses the generic decode.
+    const u32 predicate = current.Bits(87, 3);
+    if (predicate == 7) {
+        throw Unsupported{"native select predicate"};
+    }
+    const IR::U1 condition{
+        ir.GetPred(static_cast<IR::Pred>(predicate), current.Bits(90, 1) != 0)};
+    if ((current.Bits(0, 12) & 0x1ff) == 8) {
+        WriteFloat(IR::F32{ir.Select(condition, ReadFloat(0), ReadFloat(1))});
+        return;
+    }
+    WriteUint(IR::U32{ir.Select(condition, ReadUint(0), ReadUint(1))});
+}
+
+void Translator::EmitPopulationCount() {
+    // POPC: the population count of a register, with bit 63 counting the complement (confirmed with
+    // nvdisasm). Only the register form has been seen in a capture.
+    if (current.Bits(9, 3) != 1) {
+        throw Unsupported{"native population count form"};
+    }
+    IR::U32 value = Gpr(current.Bits(32, 8));
+    if (current.Bits(63, 1)) {
+        value = IR::U32{ir.BitwiseNot(value)};
+    }
+    WriteUint(ir.BitCount(value));
+}
+
 void Translator::EmitSetPredicate() {
     // FSETP and ISETP: compare, then combine the result with the accumulated predicate.
     const u32 opcode = current.Bits(0, 12);
@@ -333,7 +363,9 @@ void Translator::EmitSetPredicate() {
         if (current.Bits(72, 1)) {
             throw Unsupported{"native extended integer comparison mode"};
         }
-        return Maxwell::IntegerCompare(ir, ReadUint(0), ReadUint(1),
+        // Bits 72 and 73 are the instruction's own EX and signed flags on ISETP, not source
+        // modifiers, so source 0 is read without the modifier check.
+        return Maxwell::IntegerCompare(ir, ReadUint(0, false), ReadUint(1),
                                        static_cast<Maxwell::CompareOp>(current.Bits(76, 3)),
                                        current.Bits(73, 1) != 0);
     }()};
@@ -434,6 +466,28 @@ IR::U32 Translator::BitwiseLut3(u32 lut, const IR::U32& a, const IR::U32& b, con
 void Translator::EmitIntegerMultiplyAdd() {
     // IMAD: Ra * immediate + Rc, with the addend optionally negated. The low 32 bits of the product
     // are the same signed or unsigned, so only the carry forms need their own treatment.
+    const u32 opcode = current.Bits(0, 12);
+    if (opcode == 0xc24 || opcode == 0xe24) {
+        // The uniform file supplies the multiplier (0xc24) or the addend (0xe24), indexed by bits
+        // 32-39. On 0xe24 bit 63 negates the addend. The field positions were confirmed with
+        // nvdisasm: changing bits 32-39 renames the UR operand, and bits 64-71 is Rb in both forms.
+        const bool negate_uniform = opcode == 0xe24 && current.Bits(63, 1) != 0;
+        if ((current.words[2] & ~0x080002ffU) != 0x078e0000U ||
+            (current.words[1] & ~(0xffU | (negate_uniform ? 0x80000000U : 0U))) != 0 ||
+            current.Bits(32, 8) >= NUM_UNIFORM_REGISTERS) {
+            throw Unsupported{"native uniform multiply mode"};
+        }
+        const IR::U32 uniform = Uniform(current.Bits(32, 8));
+        if (opcode == 0xc24) {
+            WriteUint(IR::U32{ir.IAdd(ir.IMul(Gpr(current.Bits(24, 8)), uniform),
+                                    Gpr(current.Bits(64, 8)))});
+            return;
+        }
+        const IR::U32 product = ir.IMul(Gpr(current.Bits(24, 8)), Gpr(current.Bits(64, 8)));
+        const IR::U32 addend = negate_uniform ? IR::U32{ir.INeg(uniform)} : uniform;
+        WriteUint(IR::U32{ir.IAdd(product, addend)});
+        return;
+    }
     const bool negate_c = current.Bits(75, 1) != 0;
     if (current.words[1] == 1 || (current.words[2] & ~0x2ffU) != 0x078e0000U) {
         throw Unsupported{"native IMAD carry mode"};
@@ -528,15 +582,21 @@ void Translator::EmitIntegerAdd() {
     // (a carry out of both additions).
     const u32 carry_low = current.Bits(81, 3);
     const u32 carry_high = current.Bits(84, 3);
-    if ((current.words[2] & ~0xffU) != 0x07ffe000U && (current.words[2] & ~0xffU) != 0x0f91e000U) {
+    const u32 opcode = current.Bits(0, 12);
+    const u32 mode = current.words[2] & ~0xffU;
+    // Bit 91 marks the uniform-file form; otherwise the shape is the register one.
+    const bool allowed = mode == 0x07ffe000U || mode == 0x0f91e000U ||
+                         (opcode == 0xc10 && mode == 0x0fffe000U);
+    if (!allowed) {
         throw Unsupported{"native add carry mode"};
     }
-    const u32 opcode = current.Bits(0, 12);
     const IR::U32 a = Gpr(current.Bits(24, 8));
     IR::U32 b{[&]() -> IR::U32 {
         switch (opcode) {
         case 0x810:
             return ir.Imm32(current.words[1]);
+        case 0xc10:
+            return Uniform(current.Bits(32, 8));
         case 0xa10: {
             const u32 bank = ConstantBufferBank(current.Bits(54, 5));
             if (bank >= 18 || (current.Bits(38, 16) % 4) != 0) {
@@ -544,8 +604,6 @@ void Translator::EmitIntegerAdd() {
             }
             return ir.GetCbuf(ir.Imm32(bank), ir.Imm32(current.Bits(38, 16)));
         }
-        case 0xc10:
-            return Uniform(current.Bits(32, 8));
         default:
             if (current.Bits(63, 1)) {
                 return ir.INeg(Gpr(current.Bits(32, 8)));
@@ -833,24 +891,45 @@ void Translator::EmitGlobalStore() {
     case 4:
         ir.WriteGlobal32(pointer, value(data));
         return;
+    case 5: {
+        // A 64-bit store takes an aligned register pair.
+        if (data == 255 || (data % 2) != 0) {
+            throw Unsupported{"native wide global store"};
+        }
+        ir.WriteGlobal64(pointer, ir.CompositeConstruct(Gpr(data), Gpr(data + 1)));
+        return;
+    }
+    case 6: {
+        if (data == 255 || (data % 4) != 0) {
+            throw Unsupported{"native wide global store"};
+        }
+        ir.WriteGlobal128(pointer, ir.CompositeConstruct(Gpr(data), Gpr(data + 1), Gpr(data + 2),
+                                                         Gpr(data + 3)));
+        return;
+    }
     default:
-        // Wider stores write a register pair or quad from consecutive registers.
         throw Unsupported{"native wide global store"};
     }
 }
 
 void Translator::EmitCopySpecialToRegisterPair() {
-    // CS2R: a special register copied into a register pair. SRZ is the zero idiom, which is what the
-    // captured program uses to clear a 64-bit address. The field layout is not confirmed yet, so it
-    // is refused rather than guessed (`00027805 00000000 0001ff00` decodes as `CS2R R2, SRZ` with
-    // 0xff where the special number is expected).
-    throw Unsupported{"native special register pair"};
+    // CS2R: a special register copied into a register pair. Only the zero idiom is confirmed:
+    // `00027805 00000000 0001ff00 000fe200` decodes as `CS2R R2, SRZ`, with 255 where the special
+    // register goes and no source word. The special-register field is not decoded yet, so every
+    // other special register stays refused rather than guessed.
+    const u32 dest = current.Bits(16, 8);
+    if (current.Bits(72, 8) != 255 || current.words[1] != 0 ||
+        (current.words[2] & ~0x0001ff00U) != 0) {
+        throw Unsupported{"native special register pair"};
+    }
+    if (dest >= 245) {
+        throw Unsupported{"native special register pair destination"};
+    }
+    WriteUint(ir.Imm32(0));
+    ir.SetReg(Register(dest + 1), ir.Imm32(0));
 }
 
 void Translator::EmitLocalMemory() {
-    // 32-bit STL/LDL translate, but turning them on exposes a crash one block later (instruction
-    // 164, CS2R) that has not been explained yet, so they stay refused: a crash cannot fall back.
-    throw Unsupported{"native local memory mode"};
     // STL / LDL: local memory is addressed by byte and the IR takes a word offset, so the address is
     // shifted down by two.
     const u32 opcode = current.Bits(0, 12);
@@ -1164,7 +1243,9 @@ void Translator::EmitEffectiveAddress() {
         // Bits 84-86 name a second output that the lowering ignores, and its programs render
         // correctly with that field dropped, so the native path drops it too rather than inventing
         // a meaning for it.
-        if (current.Bits(63, 1) || current.Bits(62, 1) || current.Bits(91, 1)) {
+        const bool uniform_form = opcode == 0xc11;
+        if (current.Bits(63, 1) || current.Bits(62, 1) ||
+            (current.Bits(91, 1) != 0 && !uniform_form)) {
             throw Unsupported{"native effective address mode"};
         }
         const IR::U64 wide_b{ir.PackUint2x32(ir.CompositeConstruct(b, ir.Imm32(0)))};
@@ -1229,6 +1310,94 @@ void Translator::EmitShift() {
         throw Unsupported{"native shift mode"};
     }
     WriteUint(IR::U32{ir.ShiftLeftLogical(Gpr(current.Bits(24, 8)), amount)});
+}
+
+void Translator::EmitIntegerMinMax() {
+    // IMNMX: min or max of two 32-bit sources, chosen by the predicate in bits 87-90 with the
+    // negation flag in bit 90, exactly like FMNMX. Bit 73 selects the signed comparison; for this
+    // instruction bits 72-73 are the instruction's own flags, not source modifiers.
+    if ((current.words[2] & ~0x0f800200U) != 0) {
+        throw Unsupported{"native integer min/max mode"};
+    }
+    const IR::U32 a = ReadUint(0, false);
+    const IR::U32 b{current.Bits(0, 12) == 0x817 ? ir.Imm32(current.words[1]) : ReadUint(1)};
+    const bool signed_order = current.Bits(73, 1) != 0;
+    const IR::U32 minimum{signed_order ? IR::U32{ir.SMin(a, b)} : IR::U32{ir.UMin(a, b)}};
+    const IR::U32 maximum{signed_order ? IR::U32{ir.SMax(a, b)} : IR::U32{ir.UMax(a, b)}};
+    const u32 predicate = current.Bits(87, 3);
+    const bool negated = current.Bits(90, 1) != 0;
+    const IR::U1 condition{predicate == 7 ? ir.Imm1(!negated)
+                                          : ir.GetPred(static_cast<IR::Pred>(predicate), negated)};
+    WriteUint(IR::U32{ir.Select(condition, negated ? maximum : minimum,
+                                 negated ? minimum : maximum)});
+}
+
+void Translator::EmitFindLeadingOne() {
+    // FLO.U32: the index of the most significant bit, or all ones when the value is zero. The .SH
+    // form XORs the result with 31 first so it can be used as a normalisation shift, which is what
+    // the Maxwell FLO.SH the shipping path emits does.
+    if (current.Bits(9, 3) != 1 || (current.words[2] & ~0x000e0600U) != 0 ||
+        (current.words[1] & 0xffffff00U) != 0) {
+        throw Unsupported{"native leading-one mode"};
+    }
+    const IR::U32 source = Gpr(current.Bits(32, 8));
+    IR::U32 result{current.Bits(73, 1) ? ir.FindSMsb(source) : ir.FindUMsb(source)};
+    if (current.Bits(74, 1)) {
+        const IR::U1 not_found{ir.IEqual(result, ir.Imm32(0xffffffffU))};
+        result = IR::U32{ir.Select(not_found, result, IR::U32{ir.BitwiseXor(result, ir.Imm32(31))})};
+    }
+    WriteUint(result);
+}
+
+void Translator::EmitBitReverse() {
+    // BREV: the bit order of the source reversed.
+    if (current.Bits(9, 3) != 1 || (current.words[2] & ~0xffU) != 0 ||
+        (current.words[1] & 0xffffff00U) != 0) {
+        throw Unsupported{"native bit reverse mode"};
+    }
+    WriteUint(ir.BitReverse(Gpr(current.Bits(32, 8))));
+}
+
+void Translator::EmitPermuteBytes() {
+    // PRMT: a byte permute of two sources. The selector is the immediate in bits 32-63 and the
+    // second source is bits 64-71, where 255 means RZ. A selector nibble's bit 3 replicates that
+    // byte's sign bit instead of selecting it, as in the Maxwell instruction.
+    if ((current.words[2] & ~0xffU) != 0) {
+        throw Unsupported{"native byte permute mode"};
+    }
+    const IR::U32 selector = ir.Imm32(current.words[1]);
+    const IR::U32 first = ReadUint(0, false);
+    const u32 second_index = current.Bits(64, 8);
+    const IR::U32 second{second_index == 255 ? ir.Imm32(0) : Gpr(second_index)};
+    IR::U32 result{ir.Imm32(0)};
+    for (u32 byte = 0; byte < 4; ++byte) {
+        const IR::U32 nibble{ir.BitFieldExtract(selector, ir.Imm32(byte * 4), ir.Imm32(4))};
+        const IR::U32 index{ir.BitwiseAnd(nibble, ir.Imm32(7))};
+        const IR::U32 source{ir.Select(ir.ILessThan(index, ir.Imm32(4), false), first, second)};
+        const IR::U32 offset{ir.ShiftLeftLogical(ir.BitwiseAnd(index, ir.Imm32(3)), ir.Imm32(3))};
+        const IR::U32 value{ir.BitFieldExtract(source, offset, ir.Imm32(8))};
+        const IR::U32 sign{
+            ir.BitFieldExtract(source, ir.IAdd(offset, ir.Imm32(7)), ir.Imm32(1), true)};
+        const IR::U1 replicate{ir.INotEqual(ir.BitwiseAnd(nibble, ir.Imm32(8)), ir.Imm32(0))};
+        const IR::U32 picked{ir.Select(replicate, sign, value)};
+        result = ir.BitFieldInsert(result, picked, ir.Imm32(byte * 8), ir.Imm32(8));
+    }
+    WriteUint(result);
+}
+
+void Translator::EmitFunnelShift() {
+    // SHF.L.U32.HI: the high word of {zero, Rb} shifted left, with the shift amount in bits 32-63.
+    // The .W flag wraps that amount to five bits; without it the amount saturates at 32, which is
+    // what the shipping lowering does, so the 0xffffffff idiom is a plain register pass.
+    if (current.Bits(24, 8) != 255 || (current.words[2] & ~0x8ffU) != 0x00010600U ||
+        (!current.Bits(75, 1) && (current.words[3] & 0xc00001ffU) != 0)) {
+        throw Unsupported{"native funnel shift mode"};
+    }
+    const u32 amount = current.Bits(75, 1) ? (current.words[1] & 31)
+                                           : std::min(current.words[1], 32U);
+    const IR::U64 wide{ir.PackUint2x32(ir.CompositeConstruct(Gpr(current.Bits(64, 8)), ir.Imm32(0)))};
+    const IR::Value halves{ir.UnpackUint2x32(IR::U64{ir.ShiftLeftLogical(wide, ir.Imm32(amount))})};
+    WriteUint(IR::U32{ir.CompositeExtract(halves, 1)});
 }
 
 void Translator::EmitFloatMinMax() {
@@ -1403,7 +1572,10 @@ void Translator::EmitFloatMultiply() {
 }
 
 void Translator::EmitFloatFusedMultiplyAdd() {
-    if (current.Bits(76, 1) || current.Bits(81, 11)) {
+    const u32 opcode = current.Bits(0, 12);
+    const bool uniform_form = opcode == 0xc23 || opcode == 0xe23;
+    if (current.Bits(76, 1) || current.Bits(81, 10) != 0 ||
+        (current.Bits(91, 1) != 0 && !uniform_form)) {
         throw Unsupported{"native FFMA denormal/source mode"};
     }
     const IR::F32 a = ReadFloat(0);
@@ -1469,6 +1641,8 @@ void Translator::Emit() {
     case 0xc02: // MOV   (uniform register)
         EmitMove();
         return;
+    case 0xc24: // IMAD  (uniform multiplier)
+    case 0xe24: // IMAD  (uniform addend)
     case 0x824: // IMAD
         EmitIntegerMultiplyAdd();
         return;
@@ -1487,6 +1661,27 @@ void Translator::Emit() {
     case 0x803: // P2R
         EmitPredicateToRegister();
         return;
+    case 0x217: // IMNMX (register)
+    case 0x817: // IMNMX (immediate)
+        EmitIntegerMinMax();
+        return;
+    case 0x300: // FLO
+        EmitFindLeadingOne();
+        return;
+    case 0x301: // BREV
+        EmitBitReverse();
+        return;
+    case 0x816: // PRMT (immediate selector)
+        EmitPermuteBytes();
+        return;
+    case 0x419: // SHF.L.U32.HI
+        EmitFunnelShift();
+        return;
+    case 0x809: // FMNMX (immediate)
+        EmitFloatMinMax();
+        return;
+    case 0xb08: // MUFU (constant buffer source)
+    case 0xd08: // MUFU (uniform source)
     case 0x308: // MUFU
         EmitMultiFunction();
         return;
@@ -1565,6 +1760,17 @@ void Translator::Emit() {
     case 0x919: // S2R
     case 0x9c3: // S2UR
         EmitSystemRegisterRead();
+        return;
+    case 0x207: // SEL  (register)
+    case 0x807: // SEL  (immediate)
+    case 0xa07: // SEL  (constant buffer)
+    case 0x208: // FSEL (register)
+    case 0x808: // FSEL (immediate)
+    case 0xa08: // FSEL (constant buffer)
+        EmitSelectValue();
+        return;
+    case 0x309: // POPC (register)
+        EmitPopulationCount();
         return;
     case 0x20b: // FSETP (register)
     case 0x80b: // FSETP (immediate)
