@@ -1093,3 +1093,32 @@ Coverage: 3115 -> 3441 translating, and all 3441 still pass `spirv-val`. 567 rem
 
 `LDC.64` (the 64-bit indexed constant load) is added too: it fills a register pair from one
 `GetCbufU32x2`.
+
+## 2026-11-09 - The rest of the texture family and the numeric conversions
+
+`TLD` (0xb66) and `TXQ` (0xb6f) follow the same descriptor rule as `TEX`: the handle is the
+constant-buffer byte offset in bits 40-52 times four. `TLD` reads whole texel coordinates, one
+register each from `Ra` (the array layer is the low half of `Ra`, with `x` in `Ra+1` and `y` in
+`Rb` when a level follows); `TXQ` takes the mip level from bits 24-31 and asks for the mip count when
+mask bit 3 is set.
+
+Small gaps closed while measuring (each confirmed against a captured word):
+
+| opcode | meaning |
+|---|---|
+| `0x91a` | `DEPBAR`, a scoreboard wait: no IR, data dependencies already order the loads |
+| `0xd00` / `0xd09` | `FLO` / `POPC` with a uniform source: bits 9-11 are 6 instead of 1 |
+| `0x307` | `FRND`: round to an integral float, bits 78-79 select the rounding |
+| `0x306` halfword form | `I2F.U16/S16`: bits 60-61 are the half index, and the mode word is 0x101000 |
+| `0xa09` | `FMNMX` with a constant-buffer source |
+| `0x2be` | `UBREV`: `BREV` on a uniform register (bits 9-11 stay 1) |
+| `0x305` small/byte | `F2I` to a 16- or 8-bit destination: the mode word selects the width and the
+  result still fills the whole register, clamped to that width |
+
+One real bug: the store address check rejected `STG` data registers above `0x3f`, because bits 38-39
+belong to the data field, not to the address. The mask check on the mode word is the whole
+condition; the extra bit test was copied from the load path where it means something else.
+
+Coverage: 3441 -> **3564 of 4008** translate (89%), all 3564 pass `spirv-val`. What is left is
+surfaces (`SULD`/`SUST`, 79), the `IADD3`/`IMAD` carry forms (80), calls (`0x944`, 36), `TLD4`
+(35), shared-memory widths (22) and `F2FP`/`R2P`.

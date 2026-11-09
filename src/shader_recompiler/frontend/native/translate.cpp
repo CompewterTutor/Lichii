@@ -323,11 +323,12 @@ void Translator::EmitSelectValue() {
 
 void Translator::EmitPopulationCount() {
     // POPC: the population count of a register, with bit 63 counting the complement (confirmed with
-    // nvdisasm). Only the register form has been seen in a capture.
-    if (current.Bits(9, 3) != 1) {
+    // nvdisasm). 0xd09 is the same count over a uniform register.
+    const bool uniform = current.Bits(0, 12) == 0xd09;
+    if (current.Bits(9, 3) != (uniform ? 6U : 1U)) {
         throw Unsupported{"native population count form"};
     }
-    IR::U32 value = Gpr(current.Bits(32, 8));
+    IR::U32 value{uniform ? Uniform(current.Bits(32, 8)) : Gpr(current.Bits(32, 8))};
     if (current.Bits(63, 1)) {
         value = IR::U32{ir.BitwiseNot(value)};
     }
@@ -896,8 +897,7 @@ void Translator::EmitGlobalStore() {
     if (size > 6 || !current.Bits(72, 1)) {
         throw Unsupported{"native global store size"};
     }
-    if ((current.words[2] & ~(0x04000000U | 0x3fU | 0xe00U)) != 0x0810a100U ||
-        current.Bits(38, 2) != 0) {
+    if ((current.words[2] & ~(0x04000000U | 0x3fU | 0xe00U)) != 0x0810a100U) {
         throw Unsupported{"native global store uniform addressing mode"};
     }
     const u32 uniform = current.Bits(64, 6);
@@ -1382,17 +1382,61 @@ void Translator::EmitFindLeadingOne() {
     // FLO.U32: the index of the most significant bit, or all ones when the value is zero. The .SH
     // form XORs the result with 31 first so it can be used as a normalisation shift, which is what
     // the Maxwell FLO.SH the shipping path emits does.
-    if (current.Bits(9, 3) != 1 || (current.words[2] & ~0x000e0600U) != 0 ||
+    const bool uniform = current.Bits(0, 12) == 0xd00;
+    if (current.Bits(9, 3) != (uniform ? 6U : 1U) ||
+        (current.words[2] & ~(0x000e0600U | (uniform ? 0x08000000U : 0U))) != 0 ||
         (current.words[1] & 0xffffff00U) != 0) {
         throw Unsupported{"native leading-one mode"};
     }
-    const IR::U32 source = Gpr(current.Bits(32, 8));
+    const IR::U32 source{uniform ? Uniform(current.Bits(32, 8)) : Gpr(current.Bits(32, 8))};
     IR::U32 result{current.Bits(73, 1) ? ir.FindSMsb(source) : ir.FindUMsb(source)};
     if (current.Bits(74, 1)) {
         const IR::U1 not_found{ir.IEqual(result, ir.Imm32(0xffffffffU))};
         result = IR::U32{ir.Select(not_found, result, IR::U32{ir.BitwiseXor(result, ir.Imm32(31))})};
     }
     WriteUint(result);
+}
+
+void Translator::EmitFloatRound() {
+    // FRND: round a float to an integral value. Bits 78-79 are Maxwell's rounding enumeration,
+    // bit 80 the denormal mode, and bits 62-63 the absolute/negate modifiers.
+    if (current.Bits(75, 2) != 2 || current.Bits(84, 2) != 2 || current.Bits(81, 3) != 0 ||
+        current.Bits(86, 6) != 0) {
+        throw Unsupported{"native floating round format"};
+    }
+    const IR::FpControl control{
+        .no_contraction = true,
+        .rounding = IR::FpRounding::DontCare,
+        .fmz_mode = current.Bits(80, 1) ? IR::FmzMode::FTZ : IR::FmzMode::None,
+    };
+    const IR::F32 raw{ir.BitCast<IR::F32>(Gpr(current.Bits(32, 8)))};
+    const IR::F32 source{ir.FPAbsNeg(raw, current.Bits(62, 1) != 0, current.Bits(63, 1) != 0)};
+    const IR::F32 rounded{[&]() -> IR::F32 {
+        switch (current.Bits(78, 2)) {
+        case 0:
+            return IR::F32{ir.FPRoundEven(source, control)};
+        case 1:
+            return IR::F32{ir.FPFloor(source, control)};
+        case 2:
+            return IR::F32{ir.FPCeil(source, control)};
+        default:
+            return IR::F32{ir.FPTrunc(source, control)};
+        }
+    }()};
+    WriteFloat(rounded);
+}
+
+void Translator::EmitUniformBitReverse() {
+    // UBREV: the same bit reversal as BREV, on a uniform register.
+    if (current.Bits(9, 3) != 1 ||
+        (current.words[2] & ~0x08000000U) != 0 || (current.words[1] & 0xffffff00U) != 0) {
+        throw Unsupported{"native uniform bit reverse mode"};
+    }
+    const u32 target = current.Bits(16, 8);
+    if (target >= NUM_UNIFORM_REGISTERS) {
+        throw Unsupported{"native uniform bit reverse destination"};
+    }
+    ir.SetReg(UniformRegister(target), ir.BitReverse(Uniform(current.Bits(32, 8))));
 }
 
 void Translator::EmitBitReverse() {
@@ -1490,7 +1534,10 @@ void Translator::EmitIntegerToFloat() {
     // I2F.U8 / I2F.S8: a byte selected from the source, converted to float. Bit 74 picks the
     // signed form.
     const bool signed_conversion = current.Bits(74, 1) != 0;
-    if ((current.words[2] & ~0x400U) != (opcode == 0xd06 ? 0x08001000U : 0x00001000U)) {
+    const bool half_source = (current.words[2] & ~0x400U) == 0x00101000U ||
+                             (current.words[2] & ~0x400U) == 0x00201000U;
+    if (!half_source &&
+        (current.words[2] & ~0x400U) != (opcode == 0xd06 ? 0x08001000U : 0x00001000U)) {
         throw Unsupported{"native integer-to-float format"};
     }
     if (current.words[1] & 0xcfffff00U) {
@@ -1506,18 +1553,30 @@ void Translator::EmitIntegerToFloat() {
         return Gpr(current.Bits(32, 8));
     }()};
     const u32 selector = current.Bits(60, 2);
-    // A byte of the source, converted to float. The signed form sign-extends the selected byte.
-    const IR::Value value{ir.ConvertIToF(32, 8, signed_conversion,
-                                         ir.BitFieldExtract(source, ir.Imm32(selector * 8),
-                                                            ir.Imm32(8)))};
+    // A byte or halfword of the source, converted to float. The signed form extends the selected
+    // element. The halfword form's selector is a half index in bits 60-61.
+    const u32 bits = half_source ? 16 : 8;
+    const IR::Value value{ir.ConvertIToF(32, bits, signed_conversion,
+                                         ir.BitFieldExtract(source, ir.Imm32(selector * bits),
+                                                            ir.Imm32(bits)))};
     WriteFloat(IR::F32{value});
 }
 
 void Translator::EmitFloatToInteger() {
-    // F2I word form: round a float and convert it to a 32-bit integer, saturating at the ends and
-    // folding NaN to zero. Bits 78-79 pick the rounding (the Maxwell rounding enumeration), bit 72
-    // the signedness and bit 80 the denormal mode; the source modifiers are bits 62-63.
-    if ((current.words[2] & ~0x0001c100U) != 0x00203000U) {
+    // F2I: round a float and convert it to an integer, saturating at the destination range and
+    // folding NaN to zero. Bits 78-79 pick the rounding (the Maxwell enumeration), bit 72 the
+    // signedness, bit 80 the denormal mode. The destination width is encoded in the word: 32 bits
+    // (word), 16 (small) or 8 (byte), and a narrow result still fills the whole register.
+    const u32 mode = current.words[2];
+    const bool small = (mode & ~0xc000U) == 0x00212800U;
+    const bool byte = (mode & ~0x10100U) == 0x0020e000U;
+    const bool word = (mode & ~0x1c100U) == 0x00203000U;
+    if ((!word && !small && !byte) ||
+        (current.words[1] & ~0xffU) != 0 ||
+        ((small || byte) &&
+         (current.Bits(24, 8) != 0 || (current.words[3] & 0xc00001ffU) != 0 ||
+          current.Bits(91, 1) != 0 || (byte && (current.Bits(62, 1) || current.Bits(59, 3) != 0)) ||
+          (small && current.Bits(59, 3) != 0)))) {
         throw Unsupported{"native float-to-integer conversion mode"};
     }
     const IR::FpControl control{
@@ -1539,9 +1598,13 @@ void Translator::EmitFloatToInteger() {
         }
     }()};
     const bool is_signed = current.Bits(72, 1) != 0;
-    const IR::F32 low = ir.Imm32(is_signed ? -2147483648.0f : 0.0f);
-    const IR::F32 high = ir.Imm32(is_signed ? 2147483520.0f : 4294967296.0f);
-    const IR::F32 clamped{ir.FPClamp(rounded, low, high)};
+    const u32 bits = byte ? 8 : small ? 16 : 32;
+    const f32 low = is_signed ? -std::ldexp(1.0f, static_cast<int>(bits) - 1) : 0.0f;
+    const f32 high = is_signed ? (bits == 32 ? 2147483520.0f
+                                             : std::ldexp(1.0f, static_cast<int>(bits) - 1) - 1.0f)
+                               : (bits == 32 ? 4294967296.0f
+                                             : std::ldexp(1.0f, static_cast<int>(bits)) - 1.0f);
+    const IR::F32 clamped{ir.FPClamp(rounded, ir.Imm32(low), ir.Imm32(high))};
     const IR::U32 converted{is_signed ? IR::U32{ir.ConvertFToS(32, clamped)}
                                       : IR::U32{ir.ConvertFToU(32, clamped)}};
     WriteUint(IR::U32{ir.Select(ir.FPIsNan(source), ir.Imm32(0), converted)});
@@ -2021,6 +2084,138 @@ void Translator::EmitWarpReduction() {
     ir.SetReg(UniformRegister(target), value);
 }
 
+void Translator::EmitTextureQuery() {
+    // TXQ: the texture's dimensions at a mip level. Mask bit 3 asks for the mip count. The level
+    // comes from the register in bits 24-31, and the descriptor is the usual constant-buffer offset.
+    const u32 dest = current.Bits(16, 8);
+    const u32 second_dest = current.Bits(64, 8);
+    const u32 mask = current.Bits(72, 4);
+    const u32 components = static_cast<u32>(std::popcount(mask));
+    const bool direct = second_dest == 255;
+    if (current.Bits(59, 5) != 0 || mask == 0 || (direct && components > 2) ||
+        current.Bits(76, 14) != 0 || current.Bits(91, 1) != 0 ||
+        current.Bits(54, 5) >= 18 || current.Bits(40, 14) > 0x1fff || dest >= 254 ||
+        (direct && components == 2 && (dest & 1) != 0) ||
+        (!direct && (dest >= 245 || second_dest >= 245))) {
+        throw Unsupported{"native texture dimension query mode"};
+    }
+    const bool needs_mips = ((mask >> 3) & 1) != 0;
+    const IR::Value query{ir.ImageQueryDimension(
+        IR::Value{ir.Imm32(current.Bits(40, 13) * 4)}, Gpr(current.Bits(24, 8)),
+        IR::U1{ir.Imm1(!needs_mips)})};
+    for (u32 element = 0; element < 4; ++element) {
+        if (((mask >> element) & 1) == 0) {
+            continue;
+        }
+        const u32 target = !direct ? (element < 2 ? dest + element : second_dest + (element - 2))
+                                   : dest + element;
+        if (target != 255) {
+            ir.SetReg(Register(target), IR::U32{ir.CompositeExtract(query, element)});
+        }
+    }
+}
+
+void Translator::EmitTexelFetch() {
+    // TLD: a texel fetch at level zero or a given level. Coordinates are whole texel indices, one
+    // register each from Ra; for an array the layer is the low half of Ra. The level, when there is
+    // one, is a register after them.
+    const u32 dest = current.Bits(16, 8);
+    const u32 second_dest = current.Bits(64, 8);
+    const u32 source_a = current.Bits(24, 8);
+    const u32 source_b = current.Bits(32, 8);
+    const u32 dimension = current.Bits(61, 3);
+    const u32 mask = current.Bits(72, 4);
+    const u32 lod_mode = current.Bits(87, 3);
+    const bool level = lod_mode == 3;
+    const bool offsets = current.Bits(76, 1) != 0;
+    const bool split = second_dest != 255;
+    if (current.Bits(60, 1) != 1 || current.Bits(59, 1) != 0 || current.Bits(81, 3) != 7 ||
+        current.Bits(79, 1) != 0 || mask == 0 || (lod_mode != 1 && !level) ||
+        current.Bits(54, 5) >= 18 || current.Bits(40, 14) > 0x1fff ||
+        (dimension != 0 && dimension != 1 && dimension != 2 && dimension != 5) ||
+        (offsets && dimension != 1) || (level && dimension == 2)) {
+        throw Unsupported{"native texel fetch mode"};
+    }
+    const auto uint = [&](u32 index) -> IR::U32 {
+        return index == 255 ? ir.Imm32(0) : Gpr(index);
+    };
+    const auto array_index = [&](u32 index) -> IR::U32 {
+        return IR::U32{ir.BitFieldExtract(uint(index), ir.Imm32(0), ir.Imm32(16))};
+    };
+
+    IR::Value coords;
+    IR::U32 lod{ir.Imm32(0)};
+    IR::Value offset;
+    switch (dimension) {
+    case 0:
+        coords = uint(source_a);
+        if (level) {
+            lod = uint(source_b);
+        }
+        break;
+    case 1:
+        coords = ir.CompositeConstruct(uint(source_a), uint(source_a + 1));
+        if (level) {
+            lod = uint(source_b);
+        }
+        if (offsets) {
+            const IR::U32 packed{uint(level ? source_b + 1 : source_b)};
+            offset = ir.CompositeConstruct(
+                IR::U32{ir.BitFieldExtract(packed, ir.Imm32(0), ir.Imm32(4), true)},
+                IR::U32{ir.BitFieldExtract(packed, ir.Imm32(4), ir.Imm32(4), true)});
+        }
+        break;
+    case 2:
+        coords = ir.CompositeConstruct(uint(source_a), uint(source_a + 1), uint(source_a + 2));
+        break;
+    default: // ARRAY_2D: layer first in the native list, x after it, y in the second register
+        if (level) {
+            // With a level the layer is the low half of Ra, x is Ra+1, y is Rb and the level Rb+1.
+            coords = ir.CompositeConstruct(uint(source_a + 1), uint(source_b),
+                                           array_index(source_a));
+            lod = uint(source_b + 1);
+        } else {
+            coords = ir.CompositeConstruct(uint(source_a + 1), uint(source_a + 2),
+                                           array_index(source_a));
+        }
+        break;
+    }
+
+    IR::TextureInstInfo info{};
+    switch (dimension) {
+    case 0:
+        info.type.Assign(TextureType::Color1D);
+        break;
+    case 1:
+        info.type.Assign(TextureType::Color2D);
+        break;
+    case 2:
+        info.type.Assign(TextureType::Color3D);
+        break;
+    default:
+        info.type.Assign(TextureType::ColorArray2D);
+        break;
+    }
+    const IR::Value handle{ir.Imm32(current.Bits(40, 13) * 4)};
+    const IR::Value fetch{ir.ImageFetch(handle, coords, offset, lod, IR::U32{}, info)};
+
+    for (u32 element = 0; element < 4; ++element) {
+        if (((mask >> element) & 1) == 0) {
+            continue;
+        }
+        const u32 target = !split ? (dest == 255 ? 255U : dest + element)
+                                  : (element < 2 ? (dest == 255 ? 255U : dest + element)
+                                                 : second_dest + (element - 2));
+        if (target != 255) {
+            if (target >= 246) {
+                throw Unsupported{"native texel fetch destination"};
+            }
+            ir.SetReg(Register(target),
+                      ir.BitCast<IR::U32>(IR::F32{ir.CompositeExtract(fetch, element)}));
+        }
+    }
+}
+
 void Translator::EmitTextureFetch() {
     // TEX (0xb60): a sample with the descriptor in a constant buffer and the operands packed in
     // register pairs. The operand list is the array index first, then the coordinates, then the
@@ -2454,6 +2649,12 @@ void Translator::Emit() {
     case 0xb60: // TEX
         EmitTextureFetch();
         return;
+    case 0xb66: // TLD
+        EmitTexelFetch();
+        return;
+    case 0xb6f: // TXQ
+        EmitTextureQuery();
+        return;
     case 0xb82: // LDC with an indexed offset
         EmitIndexedConstantLoad();
         return;
@@ -2473,10 +2674,17 @@ void Translator::Emit() {
         EmitIntegerMinMax();
         return;
     case 0x300: // FLO
+    case 0xd00: // FLO with a uniform source
         EmitFindLeadingOne();
+        return;
+    case 0x307: // FRND
+        EmitFloatRound();
         return;
     case 0x301: // BREV
         EmitBitReverse();
+        return;
+    case 0x2be: // UBREV
+        EmitUniformBitReverse();
         return;
     case 0x816: // PRMT (immediate selector)
         EmitPermuteBytes();
@@ -2512,6 +2720,7 @@ void Translator::Emit() {
         EmitSharedMemory();
         return;
     case 0x209: // FMNMX
+    case 0xa09: // FMNMX with a constant buffer source
         EmitFloatMinMax();
         return;
     case 0x819: // SHF with an immediate shift
@@ -2573,7 +2782,8 @@ void Translator::Emit() {
     case 0xa08: // FSEL (constant buffer)
         EmitSelectValue();
         return;
-    case 0x309: // POPC (register)
+    case 0x309: // POPC
+    case 0xd09: // POPC with a uniform source (register)
         EmitPopulationCount();
         return;
     case 0x20b: // FSETP (register)
@@ -2606,6 +2816,18 @@ void Translator::Emit() {
         EmitImmediateShuffle();
         return;
     case 0x918: // NOP
+        if (current.words[1] != 0 || current.words[2] != 0) {
+            throw Unsupported{"native NOP mode"};
+        }
+        return;
+    case 0x91a: // DEPBAR
+        // A scoreboard wait. IR data dependencies already order the loads it waits on, so it
+        // translates to nothing. The shape the shipping lowering accepts is the only one seen.
+        if (current.words[0] != 0x791a || (current.words[1] & ~0x7fffU) != 0x8000 ||
+            current.words[2] != 0) {
+            throw Unsupported{"native dependency barrier mode"};
+        }
+        return;
     case 0x945: // BSSY
     case 0x941: // BSYNC
     case 0x942: // BREAK

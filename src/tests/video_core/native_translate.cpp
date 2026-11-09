@@ -185,6 +185,20 @@ constexpr Instruction WarpReduction{{0x150e73c4, 0x00000000, 0x00014000, 0x000e2
 constexpr Instruction TextureFetch{{0x00017b60, 0x30000c09, 0x009e01ff, 0x000f4400}};
 /// @P4 LDC.64 R2, c[0x4][R10]
 constexpr Instruction IndexedConstantLoad64{{0x0a024b82, 0x01000000, 0x00000a00, 0x000e2400}};
+/// TLD.SCR.LZ R10, R12, R12, R17, 2D, 0x7
+constexpr Instruction TexelFetch{{0x0c0c7b66, 0x30002411, 0x009e070a, 0x000f4200}};
+/// TXQ RZ, R24, R24, TEX_HEADER_DIMENSION, 0x3
+constexpr Instruction TextureQuery{{0x18187b6f, 0x00008400, 0x000003ff, 0x000f4200}};
+/// F2I.FTZ.U16.NTZ R38, R11
+constexpr Instruction FloatToSmallInteger{{0x00267305, 0x0000000b, 0x00212800, 0x000e6400}};
+/// FRND.FLOOR R2, R11
+constexpr Instruction FloatRound{{0x00027307, 0x0000000b, 0x00205000, 0x000e2200}};
+/// I2F.U16 R5, R5.H1
+constexpr Instruction IntegerToFloatHalf{{0x00057306, 0x10000005, 0x00101000, 0x000e2400}};
+/// FMNMX.FTZ R20, R20, c[0x0][0x40], !PT
+constexpr Instruction FloatMinMaxBuffer{{0x14147a09, 0x00001000, 0x07810000, 0x000fe200}};
+/// UBREV UR4, UR6
+constexpr Instruction UniformBitReverse{{0x000472be, 0x00000006, 0x08000000, 0x000fe200}};
 /// SGXT.U32 R5, R5, 0x1
 constexpr Instruction SignExtend{{0x0505781a, 0x00000001, 0x00000000, 0x004fe400}};
 /// IMAD.WIDE.U32 R10, R11, 0x10, R2
@@ -647,4 +661,52 @@ TEST_CASE("LDC.64 reads a constant pair", "[video_core][native]") {
     const Translated load{IndexedConstantLoad64};
     REQUIRE(load.Find(IR::Opcode::GetCbufU32x2) != nullptr);
     CHECK(load.Count(IR::Opcode::SetRegister) == 2);
+}
+
+TEST_CASE("TLD fetches a texel", "[video_core][native]") {
+    const Translated fetch{TexelFetch};
+    const IR::Inst* const image{fetch.Find(IR::Opcode::BoundImageFetch)};
+    REQUIRE(image != nullptr);
+    CHECK(image->Flags<IR::TextureInstInfo>().type.Value() == Shader::TextureType::Color2D);
+    // The destination pair is split: two components in R12 and the third in R10.
+    CHECK(fetch.Count(IR::Opcode::SetRegister) == 3);
+}
+
+TEST_CASE("TXQ queries the texture dimensions", "[video_core][native]") {
+    const Translated query{TextureQuery};
+    REQUIRE(query.Find(IR::Opcode::BoundImageQueryDimensions) != nullptr);
+    // Width and height, into R24 and R25.
+    CHECK(query.Count(IR::Opcode::SetRegister) == 2);
+}
+
+TEST_CASE("F2I converts into a 16-bit destination", "[video_core][native]") {
+    const Translated convert{FloatToSmallInteger};
+    REQUIRE(convert.Find(IR::Opcode::FPClamp32) != nullptr);
+    REQUIRE(convert.Find(IR::Opcode::ConvertU32F32) != nullptr);
+    CHECK(convert.Find(IR::Opcode::SetRegister)->Arg(0).Reg() == IR::Reg::R38);
+}
+
+TEST_CASE("FRND rounds to an integral float", "[video_core][native]") {
+    const Translated round{FloatRound};
+    REQUIRE(round.Find(IR::Opcode::FPFloor32) != nullptr);
+    CHECK(round.Find(IR::Opcode::SetRegister)->Arg(0).Reg() == IR::Reg::R2);
+}
+
+TEST_CASE("I2F converts the selected halfword", "[video_core][native]") {
+    const Translated convert{IntegerToFloatHalf};
+    REQUIRE(convert.Find(IR::Opcode::ConvertF32U16) != nullptr);
+    REQUIRE(convert.Find(IR::Opcode::BitFieldUExtract) != nullptr);
+    CHECK(convert.Find(IR::Opcode::SetRegister)->Arg(0).Reg() == IR::Reg::R5);
+}
+
+TEST_CASE("FMNMX reads a constant buffer source", "[video_core][native]") {
+    const Translated minmax{FloatMinMaxBuffer};
+    REQUIRE(minmax.Find(IR::Opcode::GetCbufF32) != nullptr);
+    CHECK(minmax.Find(IR::Opcode::SetRegister)->Arg(0).Reg() == IR::Reg::R20);
+}
+
+TEST_CASE("UBREV reverses a uniform register", "[video_core][native]") {
+    const Translated reverse{UniformBitReverse};
+    REQUIRE(reverse.Find(IR::Opcode::BitReverse32) != nullptr);
+    CHECK(static_cast<u32>(reverse.Find(IR::Opcode::SetRegister)->Arg(0).Reg()) == 512 + 4);
 }

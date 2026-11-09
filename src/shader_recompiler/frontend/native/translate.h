@@ -105,12 +105,16 @@ private:
     void EmitUniformEffectiveAddress();
     void EmitIndexedConstantLoad();
     void EmitTextureFetch();
+    void EmitTextureQuery();
+    void EmitTexelFetch();
     void EmitWarpReduction();
     void EmitUniformMultiplyAddRegister();
     void EmitFloatMinMax();
     void EmitIntegerMinMax();
     void EmitFindLeadingOne();
     void EmitBitReverse();
+    void EmitUniformBitReverse();
+    void EmitFloatRound();
     void EmitPermuteBytes();
     void EmitFunnelShift();
     void EmitShift();
