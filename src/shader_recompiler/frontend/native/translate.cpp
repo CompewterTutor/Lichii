@@ -489,12 +489,35 @@ void Translator::EmitIntegerMultiplyAdd() {
         return;
     }
     const bool negate_c = current.Bits(75, 1) != 0;
-    if (current.words[1] == 1 || (current.words[2] & ~0x2ffU) != 0x078e0000U) {
+    if ((current.words[2] & ~0x2ffU) != 0x078e0000U) {
         throw Unsupported{"native IMAD carry mode"};
     }
     const IR::U32 a = Gpr(current.Bits(24, 8));
-    const IR::U32 product = ir.IMul(a, ir.Imm32(current.words[1]));
-    IR::U32 addend = Gpr(current.Bits(64, 8));
+    // The multiplier and addend swap places between the forms: 0x824 takes the multiplier as an
+    // immediate, 0x224 as a register with the addend in bits 64-71, and 0x424 the other way round
+    // (multiplier in bits 64-71, immediate addend in word 1). Confirmed with nvdisasm.
+    const IR::U32 multiplier{[&]() -> IR::U32 {
+        switch (opcode) {
+        case 0x824:
+            return ir.Imm32(current.words[1]);
+        case 0x224:
+            return Gpr(current.Bits(32, 8));
+        case 0xa24:
+            return ReadUint(1); // constant buffer multiplier
+        default:
+            return Gpr(current.Bits(64, 8));
+        }
+    }()};
+    const IR::U32 product = ir.IMul(a, multiplier);
+    IR::U32 addend{[&]() -> IR::U32 {
+        if (opcode == 0x424) {
+            return ir.Imm32(current.words[1]);
+        }
+        if (opcode == 0x624) {
+            return ReadUint(1); // constant buffer addend
+        }
+        return Gpr(current.Bits(64, 8));
+    }()};
     if (negate_c) {
         addend = ir.INeg(addend);
     }
@@ -585,7 +608,7 @@ void Translator::EmitIntegerAdd() {
     const u32 opcode = current.Bits(0, 12);
     const u32 mode = current.words[2] & ~0xffU;
     // Bit 91 marks the uniform-file form; otherwise the shape is the register one.
-    const bool allowed = mode == 0x07ffe000U || mode == 0x0f91e000U ||
+    const bool allowed = mode == 0x07ffe000U || mode == 0x0f91e000U || mode == 0x0791e000U ||
                          (opcode == 0xc10 && mode == 0x0fffe000U);
     if (!allowed) {
         throw Unsupported{"native add carry mode"};
@@ -765,6 +788,19 @@ void Translator::EmitGlobalLoad() {
         case 4:
             store(dest_register, ir.LoadGlobal32(address64));
             return;
+        case 5: {
+            const IR::Value pair{ir.LoadGlobal64(address64)};
+            store(dest_register, IR::U32{ir.CompositeExtract(pair, 0)});
+            store(dest_register + 1, IR::U32{ir.CompositeExtract(pair, 1)});
+            return;
+        }
+        case 6: {
+            const IR::Value quad{ir.LoadGlobal128(address64)};
+            for (u32 i = 0; i < 4; ++i) {
+                store(dest_register + i, IR::U32{ir.CompositeExtract(quad, i)});
+            }
+            return;
+        }
         default:
             throw Unsupported{"native global load size"};
         }
@@ -838,6 +874,13 @@ void Translator::EmitGlobalLoad() {
         const IR::Value pair{ir.LoadGlobal64(pointer, coherent)};
         store(dest, IR::U32{ir.CompositeExtract(pair, 0)});
         store(dest + 1, IR::U32{ir.CompositeExtract(pair, 1)});
+        return;
+    }
+    case 6: {
+        const IR::Value quad{ir.LoadGlobal128(pointer, coherent)};
+        for (u32 i = 0; i < 4; ++i) {
+            store(dest + i, IR::U32{ir.CompositeExtract(quad, i)});
+        }
         return;
     }
     default:
@@ -1321,6 +1364,9 @@ void Translator::EmitIntegerMinMax() {
     }
     const IR::U32 a = ReadUint(0, false);
     const IR::U32 b{current.Bits(0, 12) == 0x817 ? ir.Imm32(current.words[1]) : ReadUint(1)};
+    if (current.Bits(0, 12) == 0xa17 && (current.words[2] & ~0x0f800200U) != 0) {
+        throw Unsupported{"native integer min/max mode"};
+    }
     const bool signed_order = current.Bits(73, 1) != 0;
     const IR::U32 minimum{signed_order ? IR::U32{ir.SMin(a, b)} : IR::U32{ir.UMin(a, b)}};
     const IR::U32 maximum{signed_order ? IR::U32{ir.SMax(a, b)} : IR::U32{ir.UMax(a, b)}};
@@ -1468,10 +1514,10 @@ void Translator::EmitIntegerToFloat() {
 }
 
 void Translator::EmitFloatToInteger() {
-    // F2I.FTZ.U32: truncate a float to an unsigned word, saturating at both ends and turning NaN
-    // into zero - the same clamp the Maxwell F2I path performs. Only the plain word form with an
-    // unsigned destination is confirmed; signed destinations and byte forms stay refused.
-    if ((current.words[2] & ~0x0001c100U) != 0x00203000U || current.Bits(72, 1) != 0) {
+    // F2I word form: round a float and convert it to a 32-bit integer, saturating at the ends and
+    // folding NaN to zero. Bits 78-79 pick the rounding (the Maxwell rounding enumeration), bit 72
+    // the signedness and bit 80 the denormal mode; the source modifiers are bits 62-63.
+    if ((current.words[2] & ~0x0001c100U) != 0x00203000U) {
         throw Unsupported{"native float-to-integer conversion mode"};
     }
     const IR::FpControl control{
@@ -1480,9 +1526,24 @@ void Translator::EmitFloatToInteger() {
         .fmz_mode = current.Bits(80, 1) ? IR::FmzMode::FTZ : IR::FmzMode::None,
     };
     const IR::F32 source = ReadFloat(1);
-    const IR::F32 clamped{ir.FPClamp(IR::F32{ir.FPTrunc(source, control)}, ir.Imm32(0.0f),
-                                     ir.Imm32(4294967296.0f))};
-    const IR::U32 converted{ir.ConvertFToU(32, clamped)};
+    const IR::F32 rounded{[&]() -> IR::F32 {
+        switch (current.Bits(78, 2)) {
+        case 0:
+            return IR::F32{ir.FPRoundEven(source, control)};
+        case 1:
+            return IR::F32{ir.FPFloor(source, control)};
+        case 2:
+            return IR::F32{ir.FPCeil(source, control)};
+        default:
+            return IR::F32{ir.FPTrunc(source, control)};
+        }
+    }()};
+    const bool is_signed = current.Bits(72, 1) != 0;
+    const IR::F32 low = ir.Imm32(is_signed ? -2147483648.0f : 0.0f);
+    const IR::F32 high = ir.Imm32(is_signed ? 2147483520.0f : 4294967296.0f);
+    const IR::F32 clamped{ir.FPClamp(rounded, low, high)};
+    const IR::U32 converted{is_signed ? IR::U32{ir.ConvertFToS(32, clamped)}
+                                      : IR::U32{ir.ConvertFToU(32, clamped)}};
     WriteUint(IR::U32{ir.Select(ir.FPIsNan(source), ir.Imm32(0), converted)});
 }
 
@@ -1545,6 +1606,18 @@ void Translator::EmitUniformMultiplyAddRegister() {
     const IR::Value halves{ir.UnpackUint2x32(IR::U64{ir.IAdd(product, pair)})};
     ir.SetReg(UniformRegister(target), IR::U32{ir.CompositeExtract(halves, 0)});
     ir.SetReg(UniformRegister(target + 1), IR::U32{ir.CompositeExtract(halves, 1)});
+}
+
+void Translator::EmitSignExtend() {
+    // SGXT.U32 / SGXT.S32: extend from the given bit, which is a logical or arithmetic shift by that
+    // amount - the same SHR the shipping lowering emits, with bit 73 selecting the signed shift.
+    const u32 shift = current.words[1];
+    if ((current.words[2] & ~0x200U) != 0 || shift > 32 || current.Bits(16, 8) >= 255) {
+        throw Unsupported{"native sign extend mode"};
+    }
+    const IR::U32 source = Gpr(current.Bits(24, 8));
+    WriteUint(current.Bits(73, 1) ? IR::U32{ir.ShiftRightArithmetic(source, ir.Imm32(shift))}
+                                  : IR::U32{ir.ShiftRightLogical(source, ir.Imm32(shift))});
 }
 
 void Translator::EmitShuffleRegister() {
@@ -2009,6 +2082,64 @@ void Translator::EmitFloatMultiply() {
     WriteFloat(value);
 }
 
+void Translator::EmitWideMultiplyAdd() {
+    // IMAD.WIDE.U32: a 32x32 product plus a register pair, written as a pair. IR has no 64-bit
+    // multiply, so the product is four 16-bit partial products; the signed form corrects the high
+    // word the way the shipping lowering does (subtract b if a is negative, add a if b is), which
+    // makes the low word identical either way.
+    const u32 opcode = current.Bits(0, 12);
+    const u32 dest = current.Bits(16, 8);
+    const u32 addend = current.Bits(64, 8);
+    const bool high_only = opcode == 0x827;
+    const bool signed_product = current.Bits(73, 1) != 0;
+    if ((current.words[2] & ~0x000e02ffU) != 0x07800000U || dest == 255 ||
+        (!high_only && ((dest % 2) != 0 || (addend != 255 && (addend % 2) != 0))) ||
+        (signed_product && current.Bits(81, 3) != 7)) {
+        throw Unsupported{"native high multiply mode"};
+    }
+    const IR::U32 a = Gpr(current.Bits(24, 8));
+    const IR::U32 b{opcode == 0x825 ? ir.Imm32(current.words[1]) : Gpr(current.Bits(32, 8))};
+    const auto high = [&](const IR::U32& value) {
+        return IR::U32{ir.ShiftRightLogical(value, ir.Imm32(16))};
+    };
+    const auto low = [&](const IR::U32& value) {
+        return IR::U32{ir.BitwiseAnd(value, ir.Imm32(0xffffU))};
+    };
+    const auto widen = [&](const IR::U32& value) {
+        return IR::U64{ir.PackUint2x32(ir.CompositeConstruct(value, ir.Imm32(0)))};
+    };
+    IR::U64 product{ir.IAdd(
+        ir.IAdd(widen(IR::U32{ir.IMul(low(a), low(b))}),
+                IR::U64{ir.ShiftLeftLogical(widen(IR::U32{ir.IMul(low(a), high(b))}),
+                                            ir.Imm32(16))}),
+        ir.IAdd(IR::U64{ir.ShiftLeftLogical(widen(IR::U32{ir.IMul(high(a), low(b))}),
+                                            ir.Imm32(16))},
+                IR::U64{ir.ShiftLeftLogical(widen(IR::U32{ir.IMul(high(a), high(b))}),
+                                            ir.Imm32(32))}))};
+    if (signed_product) {
+        const IR::U32 signed_a{ir.ShiftRightArithmetic(a, ir.Imm32(31))};
+        const IR::U32 signed_b{ir.ShiftRightArithmetic(b, ir.Imm32(31))};
+        const IR::U64 correction{ir.IAdd(
+            IR::U64{ir.ShiftLeftLogical(widen(IR::U32{ir.BitwiseAnd(signed_b, a)}), ir.Imm32(32))},
+            IR::U64{ir.ShiftLeftLogical(widen(IR::U32{ir.BitwiseAnd(signed_a, b)}), ir.Imm32(32))})};
+        product = ir.IAdd(product, correction);
+    }
+    if (high_only) {
+        // IMAD.HI: only the high word of the product, plus a single addend register.
+        const IR::U32 high_word{ir.CompositeExtract(ir.UnpackUint2x32(product), 1)};
+        const IR::U32 extra{addend == 255 ? ir.Imm32(0) : Gpr(addend)};
+        WriteUint(IR::U32{ir.IAdd(high_word, extra)});
+        return;
+    }
+    const IR::U64 pair = addend == 255
+                             ? ir.Imm64(u64{0})
+                             : IR::U64{ir.PackUint2x32(
+                                   ir.CompositeConstruct(Gpr(addend), Gpr(addend + 1)))};
+    const IR::Value halves{ir.UnpackUint2x32(IR::U64{ir.IAdd(product, pair)})};
+    ir.SetReg(Register(dest), IR::U32{ir.CompositeExtract(halves, 0)});
+    ir.SetReg(Register(dest + 1), IR::U32{ir.CompositeExtract(halves, 1)});
+}
+
 void Translator::EmitFloatFusedMultiplyAdd() {
     const u32 opcode = current.Bits(0, 12);
     const bool uniform_form = opcode == 0xc23 || opcode == 0xe23;
@@ -2079,6 +2210,18 @@ void Translator::Emit() {
     case 0xc02: // MOV   (uniform register)
         EmitMove();
         return;
+    case 0x225: // IMAD.WIDE (register multiplier)
+    case 0x827: // IMAD.HI (immediate multiplier)
+    case 0x825: // IMAD.WIDE (immediate multiplier)
+        EmitWideMultiplyAdd();
+        return;
+    case 0x81a: // SGXT
+        EmitSignExtend();
+        return;
+    case 0xa24: // IMAD  (constant buffer multiplier)
+    case 0x624: // IMAD  (constant buffer addend)
+    case 0x224: // IMAD  (register multiplier)
+    case 0x424: // IMAD  (constant buffer multiplier)
     case 0xc24: // IMAD  (uniform multiplier)
     case 0xe24: // IMAD  (uniform addend)
     case 0x824: // IMAD
@@ -2135,6 +2278,7 @@ void Translator::Emit() {
         return;
     case 0x217: // IMNMX (register)
     case 0x817: // IMNMX (immediate)
+    case 0xa17: // IMNMX (constant buffer)
         EmitIntegerMinMax();
         return;
     case 0x300: // FLO

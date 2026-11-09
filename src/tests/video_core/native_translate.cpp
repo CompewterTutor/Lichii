@@ -157,8 +157,10 @@ constexpr Instruction GlobalStore64{{0x27007986, 0x00000006, 0x0810ab0a, 0x0001e
 constexpr Instruction CopySpecialToPair{{0x00027805, 0x00000000, 0x0001ff00, 0x000fe200}};
 /// STL [RZ], R3
 constexpr Instruction StoreLocal{{0xff007387, 0x00000003, 0x00100800, 0x0001e800}};
-/// F2I.FTZ.U32.NTZ R13, R13
+/// F2I.FTZ.U32.NTZ R13, R13 (default rounding)
 constexpr Instruction FloatToInteger{{0x000d7305, 0x0000000d, 0x00213000, 0x000e2200}};
+/// F2I.FTZ.TRUNC.NTZ R11, R28
+constexpr Instruction FloatToIntegerTrunc{{0x000b7305, 0x0000001c, 0x0021f100, 0x000e2200}};
 /// UIMAD UR4, UR4, UR13, URZ
 constexpr Instruction UniformMultiplyAdd{{0x040472a4, 0x0000000d, 0x0f8e023f, 0x000fc800}};
 /// UIMAD.WIDE.U32 UR10, UR4, UR12, UR10
@@ -179,6 +181,16 @@ constexpr Instruction UniformEffectiveAddress{{0x10043891, 0x00000082, 0x0f8e303
 constexpr Instruction IndexedConstantLoad{{0x02027b82, 0x014001c0, 0x00000000, 0x000e2200}};
 /// REDUX.MAX UR14, R21
 constexpr Instruction WarpReduction{{0x150e73c4, 0x00000000, 0x00014000, 0x000e2600}};
+/// SGXT.U32 R5, R5, 0x1
+constexpr Instruction SignExtend{{0x0505781a, 0x00000001, 0x00000000, 0x004fe400}};
+/// IMAD.WIDE.U32 R10, R11, 0x10, R2
+constexpr Instruction WideMultiplyAdd{{0x0b0a7825, 0x00000010, 0x078e0002, 0x000fca00}};
+/// IMAD.HI.U32 R11, R31, 0xb21642c9, RZ
+constexpr Instruction HighMultiply{{0x1f0b7827, 0xb21642c9, 0x078e00ff, 0x040fe200}};
+/// IMAD R3, R1, c[0x3][0x1c], RZ
+constexpr Instruction MultiplyConstantBuffer{{0x01037a24, 0x00c00700, 0x078e02ff, 0x000fc800}};
+/// IMNMX R7, R6, c[0x0][0x18], PT
+constexpr Instruction IntegerMinMaxBuffer{{0x06077a17, 0x00000600, 0x03800200, 0x000fe200}};
 
 } // Anonymous namespace
 
@@ -509,12 +521,16 @@ TEST_CASE("CS2R zero idiom and STL translate", "[video_core][native]") {
     REQUIRE(local.Find(IR::Opcode::WriteLocal) != nullptr);
 }
 
-TEST_CASE("F2I truncates and clamps", "[video_core][native]") {
-    const Translated convert{FloatToInteger};
-    REQUIRE(convert.Find(IR::Opcode::FPTrunc32) != nullptr);
-    REQUIRE(convert.Find(IR::Opcode::FPClamp32) != nullptr);
-    REQUIRE(convert.Find(IR::Opcode::ConvertU32F32) != nullptr);
-    CHECK(convert.Find(IR::Opcode::SetRegister)->Arg(0).Reg() == IR::Reg::R13);
+TEST_CASE("F2I rounds, clamps and converts", "[video_core][native]") {
+    // Bits 78-79 carry the rounds-to-even/floor/ceil/truncate selection.
+    const Translated rounded{FloatToInteger};
+    REQUIRE(rounded.Find(IR::Opcode::FPRoundEven32) != nullptr);
+    REQUIRE(rounded.Find(IR::Opcode::FPClamp32) != nullptr);
+    REQUIRE(rounded.Find(IR::Opcode::ConvertU32F32) != nullptr);
+    CHECK(rounded.Find(IR::Opcode::SetRegister)->Arg(0).Reg() == IR::Reg::R13);
+
+    const Translated truncated{FloatToIntegerTrunc};
+    REQUIRE(truncated.Find(IR::Opcode::FPTrunc32) != nullptr);
 }
 
 TEST_CASE("UIMAD multiplies uniform registers", "[video_core][native]") {
@@ -583,4 +599,31 @@ TEST_CASE("REDUX reduces the warp into a uniform register", "[video_core][native
     CHECK(reduction.Count(IR::Opcode::ShuffleButterfly) == 5);
     REQUIRE(reduction.Find(IR::Opcode::UMax32) != nullptr);
     CHECK(static_cast<u32>(reduction.Find(IR::Opcode::SetRegister)->Arg(0).Reg()) == 512 + 14);
+}
+
+TEST_CASE("SGXT shifts the source", "[video_core][native]") {
+    const Translated extend{SignExtend};
+    REQUIRE(extend.Find(IR::Opcode::ShiftRightLogical32) != nullptr);
+    CHECK(extend.Find(IR::Opcode::SetRegister)->Arg(0).Reg() == IR::Reg::R5);
+}
+
+TEST_CASE("IMAD.WIDE and IMAD.HI produce a 64-bit product", "[video_core][native]") {
+    const Translated wide{WideMultiplyAdd};
+    CHECK(wide.Count(IR::Opcode::IMul32) == 4);
+    CHECK(wide.Count(IR::Opcode::SetRegister) == 2);
+
+    const Translated high{HighMultiply};
+    CHECK(high.Count(IR::Opcode::IMul32) == 4);
+    CHECK(high.Count(IR::Opcode::SetRegister) == 1);
+    CHECK(high.Find(IR::Opcode::SetRegister)->Arg(0).Reg() == IR::Reg::R11);
+}
+
+TEST_CASE("IMAD and IMNMX read a constant buffer source", "[video_core][native]") {
+    const Translated imad{MultiplyConstantBuffer};
+    REQUIRE(imad.Find(IR::Opcode::GetCbufU32) != nullptr);
+    CHECK(imad.Find(IR::Opcode::SetRegister)->Arg(0).Reg() == IR::Reg::R3);
+
+    const Translated imnmx{IntegerMinMaxBuffer};
+    REQUIRE(imnmx.Find(IR::Opcode::GetCbufU32) != nullptr);
+    CHECK(imnmx.Find(IR::Opcode::SetRegister)->Arg(0).Reg() == IR::Reg::R7);
 }

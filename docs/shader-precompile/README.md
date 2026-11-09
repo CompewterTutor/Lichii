@@ -69,14 +69,16 @@ time, each with a captured instruction and its nvdisasm decode.
 
 ### Where it stands
 
-The captured OoT compute program translates **15374 IR instructions across 119 opcodes**. The
-strict pass stops at instruction 1575 of 1920, at `F2IP`, which is the only opcode left refused. It
-has never been compiled to SPIR-V yet.
+Measured over all 4008 compute programs captured from Ocarina of Time: **3115 translate end to end**
+(78%). The rest are blocked by textures and a few remaining forms.
 
-- `F2IP` (0x243) is refused because the form in this program is not the one the shipping lowering
-  accepts, so there is no known behaviour to copy and no evidence for what its extra operands do.
-- Next: that one opcode (or a different captured program without it), then the first end-to-end
-  compile (`spirv-val`), then `EDEN_NX2_NATIVE=1` on a real save for a screenshot A/B.
+| blocker | programs |
+|---|---|
+| `TLD` (0xb60, 0xb66), `TXQ` (0xb6f, 0xb63) and 0xb97 | ~575 |
+| indexed `LDC` modes, `IMAD` carry modes, `0x307`, `F2IP` | ~180 |
+
+- Nothing has been compiled to SPIR-V yet: the next milestone is one program through `spirv-val`,
+  then `EDEN_NX2_NATIVE=1` on a real save for a screenshot A/B.
 - Next: those families, then the first end-to-end compile (`spirv-val`), then `EDEN_NX2_NATIVE=1` on
   a real save for a screenshot A/B.
 - The `If` node a failed build leaves unfilled was a null-pointer trap for anything reading the

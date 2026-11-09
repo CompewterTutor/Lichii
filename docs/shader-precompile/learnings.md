@@ -966,3 +966,39 @@ Numbers here come from two OoT sessions on the local machine (build `nx2-99ac3d5
   than guessed.
 - Coverage: 119 opcodes, 15374 IR instructions in the tolerant pass, and the strict pass now stops at
   instruction 1575 of 1920.
+
+## 2026-11-09 - Corpus measurement: 3 of 4008 compute programs, now 3115
+
+Measuring all 4008 compute programs captured from Ocarina of Time with
+`shader-sweep --native` changed the priorities completely. Before this round **3 programs**
+translated end to end; the failures were concentrated in four gaps, not spread evenly:
+
+| blocker | programs |
+|---|---|
+| 128-bit `LDG` (size 6) | 2818 |
+| `F2I` forms beyond the unsigned word | 2405 |
+| `IMAD` with a register or constant-buffer multiplier (0x224/0x424) | 1484 |
+| `IMAD.WIDE` (0x825) | 599 |
+
+- 128-bit loads were simply missing (size 6); with pairs and quads added, the count reached 1859.
+- `F2I` was refused for signed destinations and for any rounding but truncation. The word form is
+  one instruction: round per bits 78-79 (Maxwell's own enumeration: round-even, floor, ceil,
+  truncate), clamp to the destination range, convert, fold NaN to zero. That alone took the count
+  from 1859 to 2622.
+- The `IMAD` forms **move their operands around**: 0x824 takes the multiplier as an immediate with
+  the addend in bits 64-71, 0x224 the reverse for the multiplier (register) and 0x424 swaps them
+  again (multiplier in bits 64-71, immediate addend in word 1). 0xa24/0x624 read the multiplier or
+  the addend from a constant buffer. nvdisasm caught this: a first attempt decoded 0x424 as a
+  constant-buffer multiplier and produced `IMAD R28, R0, R1, 0x100` semantics that were wrong in a
+  way the translations still accepted. Re-check every operand order against the disassembly, not
+  against a neighbouring form.
+- `IMAD.WIDE`/`IMAD.HI` reuse the four-partial-product expansion from `UIMAD.WIDE`; the signed form
+  corrects the high word by subtracting `b` when `a` is negative and adding `a` when `b` is, which
+  is what the shipping lowering does.
+- `SGXT` (0x81a) is a shift: logical for `.U32`, arithmetic when bit 73 is set, by the immediate in
+  word 1.
+- `IADD3` has a third accepted word shape (0x0791e000, carry outputs without the uniform bit) and a
+  multiplier of one in `IMAD` is the `IMAD.IADD` alias, which the generic product already computes.
+- Result: **3115 of 4008** compute programs translate end to end (78%), up from 3. What is left is
+  dominated by textures (`TLD` 0xb60/0xb66, `TXQ` 0xb6f/0xb63, 0xb97) and a handful of forms:
+  indexed `LDC` modes, the remaining `IMAD` carry modes and `0x307`.

@@ -130,6 +130,8 @@ private:
     void EmitFloatAdd();
     void EmitFloatMultiply();
     void EmitFloatFusedMultiplyAdd();
+    void EmitWideMultiplyAdd();
+    void EmitSignExtend();
     void EmitImmediateShuffle();
 
     Environment& env;
