@@ -746,6 +746,84 @@ void Translator::EmitSharedMemory() {
     WriteUint(IR::U32{value});
 }
 
+void Translator::EmitUniformWideMultiplyAdd() {
+    // UIMAD.WIDE.U32: a 64-bit multiply-add into a uniform register pair.
+    const u32 target = current.Bits(16, 8);
+    const u32 addend = current.Bits(64, 8);
+    if (target + 1 >= NUM_UNIFORM_REGISTERS || addend + 1 >= NUM_UNIFORM_REGISTERS) {
+        throw Unsupported{"native uniform wide multiply mode"};
+    }
+    // IR has no 64-bit multiply at all (IMul is 32-bit only), but the multiplier is a constant, so
+    // the wide product is the sum of the shifted multiplicand for each set bit.
+    const u32 multiplier = current.words[1];
+    const IR::U64 a{ir.UConvert(64, Uniform(current.Bits(24, 8)))};
+    IR::U64 product{ir.Imm64(u64{0})};
+    for (u32 bit = 0; bit < 32; ++bit) {
+        if (((multiplier >> bit) & 1) == 0) {
+            continue;
+        }
+        product = IR::U64{
+            ir.IAdd(product, IR::U64{ir.ShiftLeftLogical(a, ir.Imm32(bit))})};
+    }
+    const IR::U64 pair = ir.PackUint2x32(
+        ir.CompositeConstruct(Uniform(addend), Uniform(addend + 1)));
+    const IR::Value sum{ir.IAdd(product, pair)};
+    const IR::Value halves{ir.UnpackUint2x32(IR::U64{sum})};
+    ir.SetReg(UniformRegister(target), IR::U32{ir.CompositeExtract(halves, 0)});
+    ir.SetReg(UniformRegister(target + 1), IR::U32{ir.CompositeExtract(halves, 1)});
+}
+
+void Translator::EmitUniformAdd() {
+    // UIADD3 with an immediate addend: the uniform-file version of IADD3.
+    const u32 target = current.Bits(16, 8);
+    if (target >= NUM_UNIFORM_REGISTERS || (current.words[2] & ~0xffU) != 0x0fffe000U) {
+        throw Unsupported{"native uniform add mode"};
+    }
+    IR::U32 value{ir.IAdd(Uniform(current.Bits(24, 8)), ir.Imm32(current.words[1]))};
+    const u32 guard = current.Bits(12, 4);
+    if ((guard & 7) != 7) {
+        IR::U1 condition = UniformPredicate(guard & 7);
+        if ((guard & 8) != 0) {
+            condition = IR::U1{ir.LogicalNot(condition)};
+        }
+        value = IR::U32{ir.Select(condition, value, Uniform(target))};
+    }
+    ir.SetReg(UniformRegister(target), value);
+}
+
+void Translator::EmitUniformSetPredicate() {
+    // UISETP: compare two uniform registers and combine the result with a uniform predicate.
+    const u32 output = current.Bits(81, 3);
+    const u32 combine = current.Bits(87, 3);
+    const u32 combine_op = current.Bits(74, 2);
+    if (output >= NUM_UNIFORM_PREDICATES || current.Bits(84, 3) != 7 || current.Bits(72, 1) ||
+        combine_op > 2) {
+        throw Unsupported{"native uniform comparison mode"};
+    }
+    const IR::U32 a = Uniform(current.Bits(24, 8));
+    const IR::U32 b{current.Bits(0, 12) == 0x88c ? ir.Imm32(current.words[1])
+                                                 : Uniform(current.Bits(32, 8))};
+    const IR::U1 comparison = Maxwell::IntegerCompare(
+        ir, a, b, static_cast<Maxwell::CompareOp>(current.Bits(76, 3)),
+        current.Bits(73, 1) != 0);
+    const IR::U1 accumulated{combine == 7
+                                 ? ir.Imm1(true)
+                                 : UniformPredicate(combine)};
+    IR::U1 result = Maxwell::PredicateCombine(
+        ir, comparison, accumulated, static_cast<Maxwell::BooleanOp>(combine_op));
+
+    // A uniform instruction is guarded by a uniform predicate.
+    const u32 guard = current.Bits(12, 4);
+    if ((guard & 7) != 7) {
+        IR::U1 condition = UniformPredicate(guard & 7);
+        if ((guard & 8) != 0) {
+            condition = IR::U1{ir.LogicalNot(condition)};
+        }
+        result = IR::U1{ir.Select(condition, result, UniformPredicate(output))};
+    }
+    SetUniformPredicate(output, result);
+}
+
 void Translator::EmitUniformShift() {
     // USHF on uniform registers: the same word forms as the immediate SHF, read from the uniform
     // file. The shift amount is the immediate in word 1.
@@ -1148,6 +1226,16 @@ void Translator::Emit() {
         return;
     case 0x819: // SHF with an immediate shift
         EmitShift();
+        return;
+    case 0x8a5: // UIMAD.WIDE
+        EmitUniformWideMultiplyAdd();
+        return;
+    case 0x890: // UIADD3 with an immediate
+        EmitUniformAdd();
+        return;
+    case 0x28c: // UISETP
+    case 0x88c: // UISETP with an immediate
+        EmitUniformSetPredicate();
         return;
     case 0x899: // USHF
         EmitUniformShift();

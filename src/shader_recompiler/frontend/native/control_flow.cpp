@@ -3,6 +3,8 @@
 
 #include "shader_recompiler/frontend/native/control_flow.h"
 
+#include <fmt/format.h>
+
 namespace Shader::Native {
 
 namespace {
@@ -73,7 +75,17 @@ IR::U1 Structurer::ConditionValue(IR::Block& block, const ControlBlock& control)
 void Structurer::TranslateRange(IR::Block* block, u32 begin, u32 end) {
     Translator translator{env, *block};
     for (u32 index = begin; index < end; ++index) {
-        if (!translator.Translate(code[index])) {
+        bool translated{};
+        try {
+            translated = translator.Translate(code[index]);
+        } catch (const std::exception& exception) {
+            // A type or consistency failure inside IR construction: name the instruction so the
+            // report points at the word that caused it, not at the whole program.
+            error = fmt::format("instruction {} ({:#05x}): {}", index, code[index].Bits(0, 12),
+                                exception.what());
+            throw UnsupportedInstruction{};
+        }
+        if (!translated) {
             error = translator.Error();
             throw UnsupportedInstruction{};
         }

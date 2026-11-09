@@ -91,6 +91,9 @@ private:
     void EmitEffectiveAddress();
     void EmitRegisterToUniform();
     void EmitUniformShift();
+    void EmitUniformSetPredicate();
+    void EmitUniformAdd();
+    void EmitUniformWideMultiplyAdd();
     void EmitIntegerToFloat();
     void EmitUniformConstantLoad();
     [[nodiscard]] IR::U64 OffsetU64(u32 value, bool negative);

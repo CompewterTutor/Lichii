@@ -815,3 +815,23 @@ Numbers here come from two OoT sessions on the local machine (build `nx2-99ac3d5
 - Coverage: 184 to 161 unimplemented instructions, 72 opcodes, and the structurer now emits 100 IR
   instructions before stopping (60 at the start of this batch). The next stop is 0x28c, a uniform
   compare that writes a uniform predicate.
+
+## 2026-11-08 - Native frontend: uniform predicate producers and the wide multiply
+
+- UISETP (0x28c/0x88c) is the first instruction that *writes* a uniform predicate: compare two
+  uniform registers with the same `IntegerCompare`/`PredicateCombine` the regular path uses, then
+  store the mask through `SetUniformPredicate`. Its guard is a uniform predicate, not a per-lane one.
+- UIADD3 with an immediate (0x890) and UIMAD.WIDE.U32 (0x8a5) round out the uniform arithmetic.
+  The wide multiply writes a uniform register pair, so it needs a 64-bit multiply — and IR has none:
+  `IMul` is 32-bit only and there is no `IMul64` opcode. Since the multiplier is a constant, the
+  product is built as the sum of the multiplicand shifted for each set bit, which is one term for
+  the common `* 0x10` shape.
+- Diagnostic improvement that paid for itself immediately: a type error thrown while building IR used
+  to surface as "compilation_failed: Incompatible types U64 and U32" with no clue which instruction.
+  `TranslateRange` now catches it and reports `instruction 35 (0x8a5): ...`, which found the bug in
+  one run.
+- That bug was mine and instructive: `ir.IMul` accepts `const U32&` only, and the U64 arguments were
+  converted down rather than rejected, so the failure appeared later as a type mismatch on the result.
+- Coverage: 161 to 146 unimplemented instructions, 76 opcodes, and the structurer now emits 254 IR
+  instructions. The program reaches its *first real form gap*: a global load whose word 2 is the
+  descriptor form (`0x0c1e1100`) rather than the plain uniform-base form.
