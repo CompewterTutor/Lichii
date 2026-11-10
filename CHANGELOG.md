@@ -22,8 +22,9 @@ New entries go under `## [Unreleased]`; `tools/ci/bump-version.sh` turns them in
   markers was rewritten and the others remained stores through a constant, which the driver rejects
   and can crash on. Every marker is rewritten now.
 - Native shader translation (opt-in, EDEN_NX2_NATIVE) handles ALD, AST, IPA and ISBERD/ISBEWR,
-  writes fragment color at the exit the way the hardware does, and swaps FMNMX/IMNMX results for
-  the inverted-predicate form instead of negating the predicate.
+  writes fragment color at the exit the way the hardware does, starts a vertex program with the
+  default position the hardware's do, and swaps FMNMX/IMNMX results for the inverted-predicate form
+  instead of negating the predicate.
 
 ### Added
 

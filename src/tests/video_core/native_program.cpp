@@ -99,12 +99,17 @@ TEST_CASE("A vertex program keeps its attribute stores", "[video_core][native]")
         inst_pool, block_pool, env, code, host_info)};
 
     size_t stores{};
+    size_t prologues{};
     for (const Shader::IR::Block* block : program.blocks) {
         for (const Shader::IR::Inst& inst : *block) {
             stores += inst.GetOpcode() == Shader::IR::Opcode::SetAttribute ? 1 : 0;
+            prologues += inst.GetOpcode() == Shader::IR::Opcode::Prologue ? 1 : 0;
         }
     }
     CHECK(stores == 4);
+    // The prologue is what the backend turns into the default gl_Position, so the components the
+    // program does not write are defined.
+    CHECK(prologues == 1);
 }
 
 TEST_CASE("An untranslatable program throws so the caller can fall back",

@@ -9,6 +9,7 @@
 #include <string>
 
 #include "shader_recompiler/exception.h"
+#include "shader_recompiler/frontend/ir/ir_emitter.h"
 #include "shader_recompiler/frontend/ir/post_order.h"
 #include "shader_recompiler/frontend/maxwell/translate_program.h"
 
@@ -96,6 +97,13 @@ IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Blo
     }
     ValidateSyntax(program.syntax_list, program.blocks);
     program.post_order_blocks = PostOrder(program.syntax_list.front());
+
+    // The Maxwell frontend starts every program with a prologue, which the SPIR-V backend turns
+    // into the default gl_Position (0, 0, 0, 1) for a vertex stage. NVN2 vertex programs write
+    // only the components they compute, so without it Z and W stay undefined and the geometry
+    // lands outside the view.
+    IR::Block& first_block{*program.syntax_list.front().data.block};
+    IR::IREmitter{first_block, first_block.begin()}.Prologue();
 
     Maxwell::FinalizeProgram(program, env, host_info);
     return program;

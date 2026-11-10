@@ -1298,3 +1298,25 @@ inputs, or the arithmetic feeding the stores, differ from the lowering's for the
 next step is a SPIR-V comparison of one program between the two frontends on the current build
 (both dumps of `EDEN_NX2_SPIRV_DUMP` for the same hash), starting from its `in_attr` reads, rather
 than more whole-frame work.
+
+## 2026-11-10 - The white frame was a missing prologue
+
+Comparing the same vertex program's SPIR-V from both frontends found it in the smallest one: the
+lowered program stores `gl_Position = (0, 0, 0, 1)` before anything else and the native one does
+not. That store comes from the IR `Prologue`, which the Maxwell frontend emits at the start of
+every program and the SPIR-V backend turns into the default position for a vertex stage. NVN2
+vertex programs write only the components they compute, so without it Z and W stay undefined and
+every triangle lands outside the view - the scene draws, the draw counts match, and the pass ends
+up holding just the clear colour.
+
+The native program builder now emits the same prologue, with a test that a vertex program keeps it
+through the whole pipeline.
+
+Live on the restored baseline save, cold cache, `EDEN_NX2_NATIVE_STAGES=vertex,mesh`: 296 vertex
+programs translate and the scene renders, matching the lowering's frame to within the temporal
+noise (mean 5.1 per channel over the whole frame, 6.1 over the character). One difference is left
+in that frame: the stone doorway in the Deku Tree is lit by the lowering and black with native
+vertex, so at least one program still computes something different.
+
+Vertex stays opt-in (`EDEN_NX2_NATIVE_STAGES=vertex,mesh`) until that difference is understood;
+`EDEN_NX2_NATIVE` alone still covers compute and fragment.
