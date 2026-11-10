@@ -143,6 +143,7 @@ private:
     void EmitSignExtend();
     void EmitImmediateShuffle();
     void EmitAttributeLoad();
+    void EmitAttributeStore();
     void EmitAttributeInterpolation();
     void EmitStageBufferAccess();
 

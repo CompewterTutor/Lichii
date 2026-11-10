@@ -45,5 +45,5 @@ TEST_CASE("Zero padding is not an unimplemented opcode", "[video_core][native]")
 TEST_CASE("A program of implemented opcodes is covered", "[video_core][native]") {
     const std::array code{WithOpcode(0x918), WithOpcode(0xa23)};
     CHECK(Shader::Native::Missing(code).empty());
-    CHECK(Shader::Native::ImplementedCount() == 141);
+    CHECK(Shader::Native::ImplementedCount() == 142);
 }

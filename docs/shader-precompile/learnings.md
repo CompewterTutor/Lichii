@@ -1242,3 +1242,34 @@ a run with the same stage set renders the character exactly as the baseline. So 
 writes wrong attributes" hypothesis is untested rather than disproved: there is no translated mesh
 program to compare yet. `AST` (0x322), then `FRAG` (0x95b) and the extended integer compares
 (~84 fallbacks) are the gate.
+
+## 2026-11-10 - AST translates, and what that exposes in the vertex path
+
+`AST` (0x322) is ALD's counterpart: it writes one to four float attributes for the vertex named in
+bits 64-71, at the byte address in bits 40-49. A one-component store to `a[0x5c]` is the
+per-primitive hint that nothing reads back, so it is dropped exactly as the lowering drops it.
+Ocarina of Time's vertex programs write the whole position with `AST R0, a[0x70]`, so nothing in
+that stage could translate before this.
+
+All 18 `AST` instructions in the captured vertex corpus fall inside the accepted subset (no patch,
+output or indexed form), and the opcode list went 141 -> 142.
+
+Live, with `EDEN_NX2_NATIVE_STAGES=vertex,mesh` and a cache cleared for the test: **301 programs
+translate and 116 fall back**, against 0 translated before. `AST` no longer appears as a fallback;
+the largest remaining reason is IADD3 (0x810) "native add carry mode is not implemented".
+
+**The 3D scene then disappears when vertex is native** (a white frame with the 2D HUD intact),
+while the lowering renders the same save correctly. Measured so far:
+
+- The IR is right: a captured vertex program keeps its six `SetAttribute` instructions through the
+  whole pipeline (`[native]` test in `native_program.cpp`), and the SPIR-V it emits from that IR
+  stores every position component (`OpStore` to the four `gl_Position` access chains) and passes
+  `spirv-val`.
+- Skipping native for dual-vertex pipelines (the guest's split vertex programs, joined by
+  `MergeDualVertexPrograms`) did not change the frame, so the merge is not the cause.
+- Fragment and compute native are unaffected; only the vertex stage breaks the image.
+
+So the fault is above the per-program translation: it is in how the produced vertex programs enter
+the pipeline (pipeline state, attribute bindings, or which draws they serve). The next step is a
+frame dump (`EDEN_NX2_FRAME_DUMP`) with vertex native, to find the first pass whose input is wrong,
+rather than more per-program comparison.

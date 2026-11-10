@@ -86,6 +86,27 @@ TEST_CASE("The native frontend builds a whole program", "[video_core][native]") 
     CHECK(program.syntax_list.back().type == Shader::IR::AbstractSyntaxNode::Type::Return);
 }
 
+TEST_CASE("A vertex program keeps its attribute stores", "[video_core][native]") {
+    // AST R0, a[0x70] writes the whole position; the store has to survive the whole pipeline the
+    // shader cache runs, or the backend has nothing to emit for gl_Position.
+    const std::array code{Instruction{{0xff007322, 0x00007000, 0x00000cff, 0x000fe200}}, Exit};
+    ProgramEnvironment env{Shader::Stage::VertexB};
+
+    Shader::ObjectPool<Shader::IR::Inst> inst_pool{256};
+    Shader::ObjectPool<Shader::IR::Block> block_pool{64};
+    const Shader::HostTranslateInfo host_info{};
+    const Shader::IR::Program program{Shader::Native::TranslateProgram(
+        inst_pool, block_pool, env, code, host_info)};
+
+    size_t stores{};
+    for (const Shader::IR::Block* block : program.blocks) {
+        for (const Shader::IR::Inst& inst : *block) {
+            stores += inst.GetOpcode() == Shader::IR::Opcode::SetAttribute ? 1 : 0;
+        }
+    }
+    CHECK(stores == 4);
+}
+
 TEST_CASE("An untranslatable program throws so the caller can fall back",
           "[video_core][native]") {
     // ATOM GLOBAL CAS has no translation, so the whole-program path must fail loudly rather than

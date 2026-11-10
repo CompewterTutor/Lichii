@@ -217,6 +217,14 @@ constexpr Instruction HighMultiply{{0x1f0b7827, 0xb21642c9, 0x078e00ff, 0x040fe2
 constexpr Instruction MultiplyConstantBuffer{{0x01037a24, 0x00c00700, 0x078e02ff, 0x000fc800}};
 /// IMNMX R7, R6, c[0x0][0x18], PT
 constexpr Instruction IntegerMinMaxBuffer{{0x06077a17, 0x00000600, 0x03800200, 0x000fe200}};
+/// AST R0, a[0x70], four components: the whole position
+constexpr Instruction AttributeStorePosition{{0xff007322, 0x00007000, 0x00000cff, 0x000fe200}};
+/// AST R4, a[0xe0] (generic 6 x)
+constexpr Instruction AttributeStoreGeneric{{0xff007322, 0x0000e004, 0x000000ff, 0x0001e200}};
+/// AST RZ, a[0x80]: RZ stores zero
+constexpr Instruction AttributeStoreZero{{0xff008322, 0x000080ff, 0x000000ff, 0x000fe200}};
+/// AST R3, a[0x5c]: the one-component per-primitive hint
+constexpr Instruction AttributeStoreHint{{0xff007322, 0x00005c03, 0x000000ff, 0x000fe200}};
 /// ALD.96 R0, a[0x80]
 constexpr Instruction AttributeLoad{{0xff007321, 0x000080ff, 0x00000800, 0x000e2200}};
 /// ALD R12, a[0x140]
@@ -777,6 +785,42 @@ TEST_CASE("ALD loads consecutive attributes into consecutive registers", "[video
     CHECK(single.Find(IR::Opcode::GetAttribute)->Arg(0).Attribute() ==
           IR::Attribute::Generic12X);
     CHECK(single.Find(IR::Opcode::SetRegister)->Arg(0).Reg() == IR::Reg::R12);
+}
+
+TEST_CASE("AST stores attributes for the vertex in bits 64-71", "[video_core][native]") {
+    // Four components write the whole position from four consecutive registers.
+    const Translated position{AttributeStorePosition};
+    REQUIRE(position.Count(IR::Opcode::SetAttribute) == 4);
+    std::array<IR::Attribute, 4> attributes{};
+    size_t index{};
+    for (const IR::Inst& inst : position.block) {
+        if (inst.GetOpcode() == IR::Opcode::SetAttribute) {
+            attributes[index] = inst.Arg(0).Attribute();
+            // Captured vertex programs name RZ, which is vertex 0.
+            REQUIRE(inst.Arg(2).Inst() != nullptr);
+            CHECK(inst.Arg(2).Inst()->GetOpcode() == IR::Opcode::GetRegister);
+            CHECK(inst.Arg(2).Inst()->Arg(0).Reg() == IR::Reg::RZ);
+            ++index;
+        }
+    }
+    CHECK(attributes[0] == IR::Attribute::PositionX);
+    CHECK(attributes[3] == IR::Attribute::PositionW);
+
+    const Translated generic{AttributeStoreGeneric};
+    REQUIRE(generic.Count(IR::Opcode::SetAttribute) == 1);
+    CHECK(generic.Find(IR::Opcode::SetAttribute)->Arg(0).Attribute() ==
+          IR::Attribute::Generic6X);
+
+    // RZ stores zeros rather than reading a register that does not exist.
+    const Translated zero{AttributeStoreZero};
+    REQUIRE(zero.Count(IR::Opcode::SetAttribute) == 1);
+    CHECK(zero.Find(IR::Opcode::SetAttribute)->Arg(0).Attribute() == IR::Attribute::Generic0X);
+}
+
+TEST_CASE("AST drops the one-component per-primitive hint", "[video_core][native]") {
+    // a[0x5c] with one component is the shading rate hint: nothing reads it back, and the lowering
+    // drops it too.
+    CHECK(Translated{AttributeStoreHint}.Count(IR::Opcode::SetAttribute) == 0);
 }
 
 TEST_CASE("IPA reads a varying and applies perspective", "[video_core][native]") {

@@ -2595,6 +2595,36 @@ void Translator::EmitAttributeLoad() {
     }
 }
 
+void Translator::EmitAttributeStore() {
+    // AST is ALD's counterpart: one to four float attributes are written for the vertex in bits
+    // 64-71. A one-component store to a[0x5c] is a per-primitive hint that nothing reads back, so
+    // it is dropped like the lowering drops it. Indexed, patch and output forms are not confirmed
+    // from captured words and fall back.
+    if (current.Bits(77, 1) || current.Bits(76, 1) || current.Bits(79, 1) ||
+        current.Bits(24, 8) != 255) {
+        throw Unsupported{"native indexed, patch or output attribute store"};
+    }
+    const u32 address = current.Bits(40, 10);
+    const u32 components = current.Bits(74, 2) + 1;
+    if (address % 4 != 0 || address + components * 4 > 0x400) {
+        throw Unsupported{"native attribute store address"};
+    }
+    if (address == 0x5c && components == 1) {
+        return;
+    }
+    const u32 value = current.Bits(32, 8);
+    if (value != 255 && value + components > 255) {
+        throw Unsupported{"native attribute store register range"};
+    }
+    const IR::U32 vertex{Gpr(current.Bits(64, 8))};
+    for (u32 element = 0; element < components; ++element) {
+        const IR::Attribute attribute{address / 4 + element};
+        // Writing RZ stores zeros, the same as the lowering's zeroed scratch registers.
+        const IR::U32 bits{value == 255 ? ir.Imm32(0) : Gpr(value + element)};
+        ir.SetAttribute(attribute, IR::F32{ir.BitCast<IR::F32>(bits)}, vertex);
+    }
+}
+
 void Translator::EmitAttributeInterpolation() {
     // IPA reads one varying. Captured programs only use the non-indexed pass and centroid forms;
     // the sample location is the host's choice, and a multiplier, indexed access or saturate has no
@@ -2927,6 +2957,9 @@ void Translator::Emit() {
         return;
     case 0x321: // ALD
         EmitAttributeLoad();
+        return;
+    case 0x322: // AST
+        EmitAttributeStore();
         return;
     case 0x326: // IPA.PASS / IPA.CENTROID
         EmitAttributeInterpolation();
