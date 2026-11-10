@@ -1273,3 +1273,28 @@ So the fault is above the per-program translation: it is in how the produced ver
 the pipeline (pipeline state, attribute bindings, or which draws they serve). The next step is a
 frame dump (`EDEN_NX2_FRAME_DUMP`) with vertex native, to find the first pass whose input is wrong,
 rather than more per-program comparison.
+
+## 2026-11-10 - The vertex white frame: what it is not
+
+Followed the frame dump through, with the save restored from `D:\git_repos\nswitch2\lichii-test-save`
+before each run so both runs start from the same place.
+
+- **The frame dump answers it at pass 082**: the baseline's pass 082 (draws 790-831) holds the
+  scene; the native run's matching pass holds the clear colour and only the HUD. Both runs execute
+  the same number of draws in that pass, so nothing is being skipped: the geometry is submitted and
+  lands outside the view, which fits wrong positions rather than a missing draw.
+- **Not dual-vertex.** No pipeline in this title builds with an `s0:` stage hash, so VertexA is
+  never present and `MergeDualVertexPrograms` never runs. The earlier experiment that skipped
+  native for dual-vertex pipelines therefore could not have changed anything, and the guard was
+  reverted rather than kept on a guess.
+- **Not the pipelines being dropped or rejected.** The log shows no `Skipping ...` and no driver or
+  validation failure; 298 vertex programs translate and 117 fall back on a cleared cache.
+- **Not the translation of a program in isolation.** A captured vertex program keeps its six
+  `SetAttribute` instructions through the whole pipeline and the SPIR-V stores all four
+  `gl_Position` components.
+
+So the remaining candidate is the *content* of what the native vertex programs compute: the ALD
+inputs, or the arithmetic feeding the stores, differ from the lowering's for the same words. The
+next step is a SPIR-V comparison of one program between the two frontends on the current build
+(both dumps of `EDEN_NX2_SPIRV_DUMP` for the same hash), starting from its `in_attr` reads, rather
+than more whole-frame work.
