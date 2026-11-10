@@ -5,7 +5,12 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <cstdlib>
+#include <mutex>
 #include <numbers>
+#include <unordered_map>
+#include <vector>
 #include "common/logging.h"
 #include "common/math_util.h"
 #include "common/param_package.h"
@@ -24,6 +29,76 @@ Common::UUID GetGUID(SDL_Joystick* joystick) {
     // Clear controller name crc
     std::memset(data.data() + 2, 0, sizeof(u16));
     return Common::UUID{data};
+}
+
+/// EDEN_NX2_INPUT_TRACE=1: log input devices coming and going, and an axis the driver still
+/// reports as held while no event for it has arrived for two seconds. A controller that drops off
+/// Bluetooth, or an event pump that stalls, both leave the last value applied, which reads as a
+/// character running in one direction forever.
+[[nodiscard]] bool InputTraceEnabled() {
+    static const bool enabled{std::getenv("EDEN_NX2_INPUT_TRACE") != nullptr};
+    return enabled;
+}
+
+/// The last event time and value of each (pad, axis), kept only with the trace on.
+struct AxisActivity {
+    PadIdentifier identifier{};
+    std::chrono::steady_clock::time_point last_event{};
+    float value{};
+    bool reported{};
+};
+
+std::mutex axis_activity_mutex;
+std::unordered_map<u64, AxisActivity> axis_activity;
+
+[[nodiscard]] u64 AxisKey(const PadIdentifier& identifier, int axis) {
+    return (u64{identifier.port} << 24) | (u64{identifier.pad} << 16) |
+           (u64{static_cast<u32>(axis)} << 8);
+}
+
+void NoteAxisEvent(const PadIdentifier& identifier, int axis, float value) {
+    std::scoped_lock lock{axis_activity_mutex};
+    AxisActivity& activity = axis_activity[AxisKey(identifier, axis)];
+    activity.identifier = identifier;
+    activity.last_event = std::chrono::steady_clock::now();
+    activity.value = value;
+    activity.reported = false;
+}
+
+/// A controller that drops off Bluetooth keeps its last axis values applied, so a deflected stick
+/// stays deflected and the character runs in that direction until the device reports again. A stick
+/// a person holds reports continuously (a hand never holds one perfectly still), so a real
+/// deflection nobody has reported for a second is a lost device: release it. Triggers rest at the
+/// ends of their range and legitimately send nothing, so only the four stick axes count.
+template <typename SetAxisFn>
+void ReleaseStuckSticks(std::chrono::steady_clock::time_point now, SetAxisFn&& set_axis) {
+    std::vector<std::pair<PadIdentifier, int>> stuck;
+    {
+        std::scoped_lock lock{axis_activity_mutex};
+        for (auto& [key, activity] : axis_activity) {
+            const int axis = static_cast<int>((key >> 8) & 0xff);
+            if (axis >= 4 || std::abs(activity.value) < 0.5f || activity.reported) {
+                continue;
+            }
+            const auto held =
+                std::chrono::duration_cast<std::chrono::milliseconds>(now - activity.last_event);
+            if (held < std::chrono::milliseconds{1000}) {
+                continue;
+            }
+            activity.reported = true;
+            const float stuck_value = activity.value;
+            activity.value = 0.0f;
+            LOG_WARNING(Input,
+                        "Input: port {} pad {} stick axis {} stayed at {:.3f} with no report for "
+                        "{} ms; releasing it until the controller reports again",
+                        activity.identifier.port, activity.identifier.pad, axis, stuck_value,
+                        held.count());
+            stuck.emplace_back(activity.identifier, axis);
+        }
+    }
+    for (const auto& [identifier, axis] : stuck) {
+        set_axis(identifier, axis, 0.0f);
+    }
 }
 
 using GamepadBindings = std::vector<SDL_GamepadBinding>;
@@ -617,6 +692,9 @@ void SDLDriver::PumpEvents() {
         return;
     }
     last_motion_stall_check = now;
+    ReleaseStuckSticks(now, [this](const PadIdentifier& identifier, int axis, float value) {
+        SetAxis(identifier, axis, value);
+    });
     std::scoped_lock lock{joystick_map_mutex};
     for (const auto& [guid, joysticks] : joystick_map) {
         for (const auto& joystick : joysticks) {
@@ -655,7 +733,9 @@ void SDLDriver::HandleGameControllerEvent(const SDL_Event& event) {
     case SDL_EVENT_JOYSTICK_AXIS_MOTION: {
         if (const auto joystick = GetSDLJoystickBySDLID(event.jaxis.which)) {
             const PadIdentifier identifier = joystick->GetPadIdentifier();
-            SetAxis(identifier, event.jaxis.axis, event.jaxis.value / 32767.0f);
+            const float value = event.jaxis.value / 32767.0f;
+            SetAxis(identifier, event.jaxis.axis, value);
+            NoteAxisEvent(identifier, event.jaxis.axis, value);
         }
         break;
     }
@@ -681,11 +761,19 @@ void SDLDriver::HandleGameControllerEvent(const SDL_Event& event) {
         break;
     }
     case SDL_EVENT_JOYSTICK_REMOVED:
-        LOG_DEBUG(Input, "Controller removed with Instance_ID {}", event.jdevice.which);
+        if (InputTraceEnabled()) {
+            LOG_INFO(Input, "Input trace: controller removed, instance {}", event.jdevice.which);
+        } else {
+            LOG_DEBUG(Input, "Controller removed with Instance_ID {}", event.jdevice.which);
+        }
         CloseJoystick(SDL_GetJoystickFromID(event.jdevice.which));
         break;
     case SDL_EVENT_JOYSTICK_ADDED:
-        LOG_DEBUG(Input, "Controller connected with device index {}", event.jdevice.which);
+        if (InputTraceEnabled()) {
+            LOG_INFO(Input, "Input trace: controller added, index {}", event.jdevice.which);
+        } else {
+            LOG_DEBUG(Input, "Controller connected with device index {}", event.jdevice.which);
+        }
         InitJoystick(event.jdevice.which);
         break;
     }

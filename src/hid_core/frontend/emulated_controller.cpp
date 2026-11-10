@@ -6,6 +6,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
+#include <mutex>
+#include <common/logging.h>
 #include <common/scope_exit.h>
 
 #include <ranges>
@@ -1841,6 +1844,44 @@ DebugPadButton EmulatedController::GetDebugPadButtons() const {
     return controller.debug_pad_button_state;
 }
 
+namespace {
+
+/// EDEN_NX2_INPUT_TRACE=1: the game polls the sticks at its frame rate. A gap between two polls
+/// much longer than a frame means the thread that feeds HID stopped, which leaves the last stick
+/// value applied while the guest keeps moving.
+void TracePollGap(const AnalogStickState& left, const AnalogStickState& right) {
+    static const bool enabled{std::getenv("EDEN_NX2_INPUT_TRACE") != nullptr};
+    if (!enabled) {
+        return;
+    }
+    static std::mutex mutex;
+    static std::chrono::steady_clock::time_point last{};
+    static std::chrono::steady_clock::time_point last_report{};
+
+    const auto now = std::chrono::steady_clock::now();
+    const auto previous = last;
+    last = now;
+    if (previous.time_since_epoch().count() == 0) {
+        return;
+    }
+    const bool held = left.x != 0 || left.y != 0 || right.x != 0 || right.y != 0;
+    const auto gap = std::chrono::duration_cast<std::chrono::milliseconds>(now - previous);
+    if (!held || gap < std::chrono::milliseconds{150}) {
+        return;
+    }
+    std::scoped_lock lock{mutex};
+    if (now - last_report < std::chrono::seconds{1}) {
+        return;
+    }
+    last_report = now;
+    LOG_WARNING(Input,
+                "Input trace: stick ({}, {}) held across a {} ms gap between polls: the thread that "
+                "feeds HID stalled",
+                left.x, left.y, gap.count());
+}
+
+} // Anonymous namespace
+
 AnalogSticks EmulatedController::GetSticks() const {
     if (is_configuring)
         return {};
@@ -1854,6 +1895,7 @@ AnalogSticks EmulatedController::GetSticks() const {
         sticks.left = injected->left.value_or(sticks.left);
         sticks.right = injected->right.value_or(sticks.right);
     }
+    TracePollGap(sticks.left, sticks.right);
     return sticks;
 }
 

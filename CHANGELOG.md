@@ -14,6 +14,10 @@ New entries go under `## [Unreleased]`; `tools/ci/bump-version.sh` turns them in
 
 ### Fixed
 
+- A controller that stops reporting, as a DualSense does over Bluetooth, no longer leaves the last
+  stick position applied: a deflection with no reports for a second is released to centre, so a
+  character stops running in one direction instead of continuing until the pad reports again.
+
 - Mesh programs with more than one exit built invalid SPIR-V: only one of the mesh set-outputs
   markers was rewritten and the others remained stores through a constant, which the driver rejects
   and can crash on. Every marker is rewritten now.
