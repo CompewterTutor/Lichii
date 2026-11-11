@@ -749,8 +749,11 @@ void Translator::EmitGlobalLoad() {
             ir.CompositeConstruct(Gpr(address), Gpr(address + 1)))};
         const u32 raw_offset = current.Bits(40, 24);
         const s32 offset = static_cast<s32>(raw_offset << 8) >> 8;
-        const IR::U64 address64{
-            ir.IAdd(pointer, OffsetU64(static_cast<u32>(offset), offset < 0))};
+        const IR::U64 address64{offset == 0
+                                    ? pointer
+                                    : IR::U64{ir.IAdd(pointer,
+                                                      ir.Imm64(static_cast<u64>(
+                                                          static_cast<s64>(offset))))}};
         const u32 dest_register = current.Bits(16, 8);
         const Guard instruction_guard = DecodeGuard(current);
         const auto store = [&](u32 index, const IR::U32& value) {
@@ -823,16 +826,26 @@ void Translator::EmitGlobalLoad() {
             ir.CompositeConstruct(Uniform(uniform), Uniform(uniform + 1)))};
     }()};
     if (!descriptor && address != 255) {
-        // Bit 90 makes the register offset a 64-bit pair; otherwise it is zero-extended.
-        const IR::U64 offset =
-            current.Bits(90, 1)
-                ? IR::U64{ir.PackUint2x32(ir.CompositeConstruct(Gpr(address), Gpr(address + 1)))}
-                : IR::U64{ir.PackUint2x32(ir.CompositeConstruct(Gpr(address), ir.Imm32(0)))};
-        pointer = ir.IAdd(pointer, offset);
+        // Bit 90 makes the register offset a 64-bit pair; otherwise it is zero-extended. The sum is
+        // built word by word rather than as one 64-bit add: the storage buffer pass only tracks an
+        // address whose low word is a 32-bit add of the base's own words, and a packing of a 64-bit
+        // sum hides them, which leaves the load reading the pointer table at run time.
+        const IR::U32 low{Uniform(current.Bits(32, 6))};
+        const IR::U32 high{Uniform(current.Bits(32, 6) + 1)};
+        const IR::U32 offset_low{Gpr(address)};
+        const IR::U32 offset_high{current.Bits(90, 1) ? Gpr(address + 1) : ir.Imm32(0)};
+        const IR::U64 wide{ir.IAdd(
+            IR::U64{ir.PackUint2x32(ir.CompositeConstruct(low, ir.Imm32(0)))},
+            IR::U64{ir.PackUint2x32(ir.CompositeConstruct(offset_low, ir.Imm32(0)))})};
+        const IR::U32 carry{IR::U32{ir.CompositeExtract(ir.UnpackUint2x32(wide), 1)}};
+        pointer = IR::U64{ir.PackUint2x32(ir.CompositeConstruct(
+            ir.IAdd(low, offset_low), ir.IAdd(ir.IAdd(high, offset_high), carry)))};
     }
     const u32 raw = current.Bits(40, 24);
     const s32 immediate = static_cast<s32>(raw << 8) >> 8;
-    pointer = ir.IAdd(pointer, OffsetU64(static_cast<u32>(immediate), immediate < 0));
+    if (immediate != 0) {
+        pointer = ir.IAdd(pointer, ir.Imm64(static_cast<u64>(static_cast<s64>(immediate))));
+    }
 
     const u32 dest = current.Bits(16, 8);
     const auto store = [&](u32 index, const IR::U32& value) {
@@ -893,19 +906,26 @@ void Translator::EmitGlobalStore() {
         throw Unsupported{"native global store uniform addressing mode"};
     }
     const u32 uniform = current.Bits(64, 6);
-    const IR::U64 base = ir.PackUint2x32(
-        ir.CompositeConstruct(Uniform(uniform), Uniform(uniform + 1)));
-    IR::U64 pointer = base;
+    const IR::U32 low{Uniform(uniform)};
+    const IR::U32 high{Uniform(uniform + 1)};
+    IR::U64 pointer = ir.PackUint2x32(ir.CompositeConstruct(low, high));
     if (address != 255) {
-        const IR::U64 offset =
-            current.Bits(90, 1)
-                ? IR::U64{ir.PackUint2x32(ir.CompositeConstruct(Gpr(address), Gpr(address + 1)))}
-                : IR::U64{ir.PackUint2x32(ir.CompositeConstruct(Gpr(address), ir.Imm32(0)))};
-        pointer = ir.IAdd(pointer, offset);
+        // Word by word for the same reason as the load: the storage buffer pass tracks a low word
+        // that is a 32-bit add of the base's own words.
+        const IR::U32 offset_low{Gpr(address)};
+        const IR::U32 offset_high{current.Bits(90, 1) ? Gpr(address + 1) : ir.Imm32(0)};
+        const IR::U64 wide{ir.IAdd(
+            IR::U64{ir.PackUint2x32(ir.CompositeConstruct(low, ir.Imm32(0)))},
+            IR::U64{ir.PackUint2x32(ir.CompositeConstruct(offset_low, ir.Imm32(0)))})};
+        const IR::U32 carry{IR::U32{ir.CompositeExtract(ir.UnpackUint2x32(wide), 1)}};
+        pointer = ir.PackUint2x32(ir.CompositeConstruct(
+            ir.IAdd(low, offset_low), ir.IAdd(ir.IAdd(high, offset_high), carry)));
     }
     const u32 raw = current.Bits(40, 24);
     const s32 immediate = static_cast<s32>(raw << 8) >> 8;
-    pointer = ir.IAdd(pointer, OffsetU64(static_cast<u32>(immediate), immediate < 0));
+    if (immediate != 0) {
+        pointer = ir.IAdd(pointer, ir.Imm64(static_cast<u64>(static_cast<s64>(immediate))));
+    }
 
     const auto value = [&](u32 index) -> IR::U32 {
         return index == 255 ? ir.Imm32(0) : Gpr(index);

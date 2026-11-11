@@ -1391,3 +1391,27 @@ lowering reads it once. That is where to look next.
 A note on earlier pass comparisons: passes were matched by (format, size, address), which silently
 drops a pass when a run gives it a different address. The first differing pass therefore looked like
 the 1280x720 one; the 2560x1440 scene pass that lists `40e7bd9af74fe01c` is a better candidate.
+
+## 2026-11-11 - A native address the storage buffer pass cannot see
+
+The one program behind the door, `40e7bd9af74fe01c`, emits its only memory read as a runtime pointer
+table access: its SPIR-V reads the pointer words out of the constant buffer and routes the access at
+run time, while the lowering's module for the same program reads one storage buffer. Both are
+correct in principle, so the first suspect was the address itself.
+
+`ir_opt/global_memory_to_storage_buffer_pass.cpp` reads a global access's address through
+`TrackLowAddress`: one `IAdd64` whose second operand is an immediate, then `PackUint2x32`, then
+`CompositeConstructU32x2`. The Maxwell lowering always produces that shape - it materialises the
+base-plus-offset sum into a register pair with `IADD3` before the load, so the address is
+`PackUint2x32(pair) + Imm64`. The native frontend instead summed packed 64-bit values and expressed
+the immediate as `PackUint2x32(CompositeConstruct(Imm32, Imm32))`, so the pass saw no immediate and
+gave up on the whole access.
+
+`src/tests/video_core/global_address_tracking.cpp` now builds each shape and asserts the pass keeps
+the load on a storage buffer; the two packed shapes fail there before the change. The native emitters
+now add a register offset word by word - `IAdd32` for the low word, the carry from a 64-bit sum added
+to the high word - and pass the immediate as a real `Imm64`. The program's module then reads
+`ssbo0` like the lowering's does.
+
+That did not restore the door panel, so the program has a second difference. It is still the only
+program that matters: with it skipped, every other vertex program native, the panel is present.
