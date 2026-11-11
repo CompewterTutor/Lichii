@@ -1362,3 +1362,32 @@ hashes no longer report `Native frontend ... translated`, before drawing any con
 
 `EDEN_NX2_NATIVE_SKIP_HASH=<hash>,...` is new: those stage programs are left to the lowering, so a
 single program can be taken out of the native frontend for an A/B.
+
+## 2026-11-11 - The Deku Tree door is one vertex program
+
+`EDEN_NX2_NATIVE_SKIP_HASH` works: in a run that skips `da8f4664b4f42327` and `4b08664c759deb48`
+the log reports no `Native frontend: 0x... translated` line for either, and the panel is still
+missing. So the pass's two listed shaders are not the cause, and the earlier result that "skipping
+did not restore the panel" was genuine, not a broken switch.
+
+Mesh programs are not the cause either: with `EDEN_NX2_NATIVE_STAGES=vertex` (mesh left to the
+lowering) the panel is still missing.
+
+Skipping all 164 vertex programs the native frontend translated brings the panel back, so the door
+region is a usable oracle: 2.1-4.6 with the panel, 13-15 without it (crop 200,20-520,320 of the
+1280x720 screenshot, away from the fairy). Bisecting that list eight rounds narrowed it to one
+program: `40e7bd9af74fe01c`. Skipping only that hash restores the panel.
+
+The program is a vertex shader of the 2560x1440 scene pass (its shader list carries it), 201
+instructions: 86 FFMA, 53 FMUL, 18 FADD, 12 `LDC` with a register base and 64-bit width out of bank
+6, 8 `ALD`, 8 `AST`, and one each of `LDG`, `ISETP` immediate, `SHF` immediate, `SEL` and two `MUFU`.
+Its lowered and native SPIR-V store the same things (six generics and `gl_Position` as the sum of two
+products), so the transcription is structurally right and the difference is in the values.
+
+Two read differences stand out between the two modules for that program: the native path reads
+constant word 69 in addition to 68, and repeats a `c0[34]`/`c0[70]` pair six times where the
+lowering reads it once. That is where to look next.
+
+A note on earlier pass comparisons: passes were matched by (format, size, address), which silently
+drops a pass when a run gives it a different address. The first differing pass therefore looked like
+the 1280x720 one; the 2560x1440 scene pass that lists `40e7bd9af74fe01c` is a better candidate.
