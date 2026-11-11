@@ -1339,3 +1339,26 @@ So the remaining difference is not in shader translation: it is in what that pas
 shadow or texture product of an earlier pass, or a state that the native vertex programs change
 indirectly). That is RenderDoc territory - pick the door's draw, inspect its bindings and the
 texture it samples - rather than more SPIR-V comparison.
+
+## 2026-11-11 - The door is real, and it is not the two programs I expected
+
+Two baseline runs from the same save with a cleared cache both show the carved door panel; the
+vertex-native run does not. So the difference is real and not temporal: the panel object is not
+drawn (or lands off screen).
+
+Where it first appears: with the passes matched by format, size and address, only four passes differ
+at all - the 1280x720 scene pass, the 960x540 and 2560x1440 copies of it, and the 192x192 map
+texture. Every pass before them matches. So the panel is lost at the 1280x720 scene pass, which the
+dump lists with exactly two shaders.
+
+Both of those were compared against the lowering and are equivalent: the vertex program's body
+differs only in ids (same inputs, same `gl_Position` X/Y/Z stores, same `out_attr0`), and the
+fragment program is the lowering's in both runs.
+
+Skipping those two hashes with the new `EDEN_NX2_NATIVE_SKIP_HASH` did not bring the panel back, so
+either the switch did not take effect in that run or the panel is drawn by a pipeline the pass does
+not list. That is the next thing to check - rerun with the skip, and confirm in the log that the two
+hashes no longer report `Native frontend ... translated`, before drawing any conclusion from it.
+
+`EDEN_NX2_NATIVE_SKIP_HASH=<hash>,...` is new: those stage programs are left to the lowering, so a
+single program can be taken out of the native frontend for an A/B.

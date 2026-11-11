@@ -116,6 +116,20 @@ namespace {
     return stages.find(token) != std::string::npos;
 }
 
+/// EDEN_NX2_NATIVE_SKIP_HASH=<hash>,...: leave those stage programs to the lowering, so one
+/// program at a time can be taken out of the native frontend for an A/B. Hashes are the program
+/// hashes the pipeline key carries.
+[[nodiscard]] bool NativeSkipHash(u64 hash) {
+    static const std::string skip = [] {
+        const char* const text = std::getenv("EDEN_NX2_NATIVE_SKIP_HASH");
+        return text != nullptr ? std::string{","} + text + "," : std::string{};
+    }();
+    if (skip.empty()) {
+        return false;
+    }
+    return skip.find(fmt::format(",{:016x},", hash)) != std::string::npos;
+}
+
 /// EDEN_NX2_SPIRV_DUMP=<dir>: every emitted module, named by program hash and stage, whatever
 /// frontend built it.
 void DumpSpirvForDebug(std::span<const u32> code, u64 shader_hash, const char* stage_name) {
@@ -2321,7 +2335,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
 
         const auto translate = [&] {
             if (NativeFrontendEnabled() && NativeStageEnabled(env.ShaderStage()) &&
-                !env.NativeInstructions().empty()) {
+                !env.NativeInstructions().empty() && !NativeSkipHash(key.unique_hashes[index])) {
                 try {
                     Shader::IR::Program program = Shader::Native::TranslateProgram(
                         pools.inst, pools.block, env, env.NativeInstructions(), host_info);
