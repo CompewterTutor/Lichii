@@ -1320,3 +1320,22 @@ vertex, so at least one program still computes something different.
 
 Vertex stays opt-in (`EDEN_NX2_NATIVE_STAGES=vertex,mesh`) until that difference is understood;
 `EDEN_NX2_NATIVE` alone still covers compute and fragment.
+
+## 2026-11-11 - The Deku Tree door: not a vertex program
+
+Followed the door difference through the frame dumps of a baseline run and a vertex-native run at the
+same save.
+
+- The door's visible difference first appears in the 2560x1440 pass numbered 78 in the native run
+  (79 in the baseline), whose two draws have the **same two shaders in both runs** - and both of
+  those programs disassemble to the same body. So the door is not being drawn by a differently
+  translated vertex program.
+- The pass before it in that chain (43/44) is a specular-only target: black apart from highlights,
+  and its door-region difference is 0.19 per channel. The shadow and depth passes match even closer.
+- Every other pass in the frame matches within noise; the door region is the only place that
+  separates the two runs (8.07 per channel in pass 78/79 against 0.19 or less everywhere else).
+
+So the remaining difference is not in shader translation: it is in what that pass reads (a light,
+shadow or texture product of an earlier pass, or a state that the native vertex programs change
+indirectly). That is RenderDoc territory - pick the door's draw, inspect its bindings and the
+texture it samples - rather than more SPIR-V comparison.
