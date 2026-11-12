@@ -8,6 +8,8 @@ New entries go under `## [Unreleased]`; `tools/ci/bump-version.sh` turns them in
 
 ### Changed
 
+- The user directory is now `lichii` rather than `eden`. An existing Eden profile is offered for
+  import on first launch; keeping the old data copies it and leaves the original untouched.
 - The emulator is now on upstream's pipeline cache: pipelines are recorded and precached through the
   shader cache v2 described above, which replaces the earlier per-title key list and its tools.
   Existing caches keep working: this version still reads the two before it.
