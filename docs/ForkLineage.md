@@ -169,3 +169,15 @@ Facts that changed since the survey above.
   gameplay clips, build announcements and shader-cache sharing threads; the recurring useful signal
   is that shared caches are frequently corrupt and that Fritchii is recommended for Ocarina on
   NVIDIA. Claims there need a commit to back them.
+
+## The profile directory moved with the parent merge
+
+`zortos293/Lichii` renamed the user directory in `src/common/fs/fs_paths.h` from `eden` to `lichii`
+(`EDEN_DIR`). After moving this branch onto that line the emulator reads and writes
+`%APPDATA%\lichii`, sees the old `%APPDATA%\eden` as a legacy profile, and offers the import prompt
+that `UserDataMigrator` shows in `MainWindow` before anything boots. Until that prompt is answered
+the build runs with no keys, no firmware and no saves, which looks exactly like a broken boot.
+
+This tree's dev profile was moved by copying `eden` into `lichii` and marking the import resolved
+with `%APPDATA%\lichii.migration\complete`. `eden` is left untouched, so the other forks keep
+working. The save snapshot scripts and the live test runner now point at `lichii`.
