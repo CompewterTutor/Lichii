@@ -356,6 +356,9 @@ TEST_CASE("IMAD multiplies and adds", "[video_core][native]") {
 
 TEST_CASE("LOP3 with the AND table reduces to a bitwise and", "[video_core][native]") {
     // LUT 0xc0 is a & b, so the generic expansion has to end up as the and of the two sources.
+    // The table is indexed with a as the most significant selector (a * 4 + b * 2 + c); indexing it
+    // the other way round turns this table into a constant zero and makes the door of Ocarina's Deku
+    // Tree house disappear.
     const Translated lut{LogicLut};
     const IR::Inst* store = lut.Find(IR::Opcode::SetRegister);
     REQUIRE(store != nullptr);

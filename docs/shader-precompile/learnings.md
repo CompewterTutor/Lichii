@@ -1415,3 +1415,26 @@ to the high word - and pass the immediate as a real `Imm64`. The program's modul
 
 That did not restore the door panel, so the program has a second difference. It is still the only
 program that matters: with it skipped, every other vertex program native, the panel is present.
+
+## 2026-11-11 - The second door defect: the LOP3 table was indexed backwards
+
+With the address shape fixed, `40e7bd9af74fe01c` still lost the door panel. Its two SPIR-V modules
+have the same operation counts for every floating point form, the same inputs and outputs and the
+same constant-buffer reads feeding `gl_Position`, so the difference had to be in an integer
+expression. Tracing the storage-buffer index of `out_attr14` showed it: where the lowering computes
+`flags & 0xfffff`, the native module computes zero for every input.
+
+The shader's two `LOP3` instructions carry the table `0xc0`, which Maxwell's own table documents as
+`a & b`. `Translator::BitwiseLut3` built its Shannon expansion with `a` as the *least* significant
+selector (`a | b << 1 | c << 2`), so table 0xc0 became "a and b with both c bits set", which no input
+satisfies when c is RZ, and the result was a constant zero. The order is `a * 4 + b * 2 + c`, the
+same one the generated Maxwell table uses (its `case 192` is `a & b`).
+
+That one inversion explains the panel: the masked field addresses a buffer the vertex shader reads
+for the door's attribute set, and a zeroed address returns the wrong record. It also explains the
+"some meshes shade too dark" note that kept the vertex and mesh stages opt-in: any `LOP3` whose table
+is not symmetric in `a` and `c` was silently wrong.
+
+The captured-instruction test in `src/tests/video_core/native_translate.cpp` only counted and/or/not
+nodes, so it passed with the inverted table; the check that caught it was comparing the translated
+module against the lowering's own module for the same program.

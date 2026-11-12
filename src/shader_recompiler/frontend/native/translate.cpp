@@ -437,7 +437,8 @@ void Translator::EmitPredicateLut() {
 
 IR::U32 Translator::BitwiseLut3(u32 lut, const IR::U32& a, const IR::U32& b, const IR::U32& c) {
     // A bitwise lookup table: each output bit depends on the same bit of the three sources, so the
-    // Shannon expansion is a bitwise select. NVIDIA indexes the table as a | b << 1 | c << 2.
+    // Shannon expansion is a bitwise select. NVIDIA indexes the table with a as the most significant
+    // selector, a * 4 + b * 2 + c, the same order Maxwell's LOP3 table uses (its 0xc0 is a & b).
     const auto bit = [&](u32 index) {
         return ((lut >> index) & 1) != 0 ? ir.Imm32(0xffffffffU) : ir.Imm32(0);
     };
@@ -446,10 +447,10 @@ IR::U32 Translator::BitwiseLut3(u32 lut, const IR::U32& a, const IR::U32& b, con
         return IR::U32{ir.BitwiseOr(ir.BitwiseAnd(selector, when_set),
                                     ir.BitwiseAnd(ir.BitwiseNot(selector), when_clear))};
     };
-    const IR::U32 low_b = choose(c, bit(6), bit(2));
-    const IR::U32 low_a = choose(c, bit(4), bit(0));
-    const IR::U32 high_b = choose(c, bit(7), bit(3));
-    const IR::U32 high_a = choose(c, bit(5), bit(1));
+    const IR::U32 low_b = choose(c, bit(3), bit(2));
+    const IR::U32 low_a = choose(c, bit(1), bit(0));
+    const IR::U32 high_b = choose(c, bit(7), bit(6));
+    const IR::U32 high_a = choose(c, bit(5), bit(4));
     const IR::U32 low = choose(b, low_b, low_a);
     const IR::U32 high = choose(b, high_b, high_a);
     return choose(a, high, low);
