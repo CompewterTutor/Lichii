@@ -16,7 +16,7 @@ Djihads80/Eglantine (nx2)          shared root, still the reference upstream
 
 | Repository | Created | Relationship | Carries |
 |---|---|---|---|
-| `Djihads80/Eglantine` | 2026-10-29 | shared root ("VERY experimental Nintendo Switch 2 emulator") | the `nx2` branch every fork pulls from; lowering fixes, pipeline-cache and buffer-cache work |
+| `Eglantine-Community/Eglantine` (was `Djihads80/Eglantine`) | 2026-10-29 | shared root ("VERY experimental Nintendo Switch 2 emulator") | the `nx2` branch every fork pulls from; lowering fixes, pipeline-cache and buffer-cache work |
 | `zortos293/Lichii` | 2026-10-31 | continues Eglantine from `01423a2470` (#104) with the root commit `60ef6d2750` "COMMIT TO nx2 source", then merged Eglantine `nx2` up to `e736dfde9e` (#567, 2026-11-05) in `aba754a353` | shader cache v2, `shader_warm` precache, the live debug server, the frame dump, most Switch 2 game work |
 | `CompewterTutor/Lichii` | 2026-11-05 | fork of `zortos293/Lichii`; this repository | the native NVN2 frontend (`src/shader_recompiler/frontend/native`), its tooling and dumps, input-stick and debug-server fixes |
 | `Frizti/Fritchii` | 2026-11-05 | fork of `zortos293/Lichii`, described as a "Frontier GREEN HAT BOY ADVENTURE specialized Lichii fork" | its own product line: saves window, its own data folder, DLSS quality per game, NX archive support, ports of Eglantine experiment branches |
@@ -134,3 +134,38 @@ git log --oneline --no-merges HEAD..origin/bisect/oot-6
 
 A commit that appears only on the other side of `HEAD...<ref>` is not in this tree; same subject with
 a different hash usually means both lines took the same change independently.
+
+## Survey 2026-11-12
+
+Facts that changed since the survey above.
+
+- **Eglantine moved to `Eglantine-Community/Eglantine`.** `Djihads80/Eglantine` resolves to the same
+  history and the same `nx2` tip (`6be10b5c12`), so the old URL still fetches; new work lands under
+  the community organisation. Fetch the community repository and keep the old one only as a
+  fallback.
+- **This tree's parent is the real backlog, not Eglantine.** `zortos293/Lichii` `nx2` is at
+  `3dd5c4e73c` with 93 commits this tree does not have, 46 of them under `src/shader_recompiler` or
+  `src/video_core`. It is the line the shared shader cache v2 and the native frontend were built
+  against, so these arrive as an ordinary merge rather than a port. The shader-side ones worth
+  reading first: `7281d70993` (three precache fixes from nx2-experimental), `43af97ffaf` (reduce
+  shader compilation work), `e84908679a` (SSA phis only when needed), `bd0171f7b9` (OoT light-table
+  shadow maps through descriptor arrays), `4f3f9fe629` (Yoshi's 3D world: 3D SURED, bindless AOFFI
+  gather, geometry ALD), `121e5c04ae` (fold UISETP/USEL to IMNMX.U32), `4c6ef2b810` (TLD4.B with a
+  register handle, IMAD with a negated cbuf addend), `be24147966` (rebuild evicted graphics pipelines
+  from kept SPIR-V) and `e63d0a04df` (keep graphics pipelines to a RAM limit, build all cached
+  shaders at boot).
+- **Eglantine itself has not moved** on `nx2` since the survey: still 250 commits past the shared
+  base. It now publishes a `updater/tester-builds` branch and near-daily releases.
+- **Fritchii is not the largest fork, it is the Ocarina of Time one.** 3.7k stars against Lichii's
+  8.7k and Eglantine's 5.9k, Windows x64 only, last push 2026-11-11, release `fritchii-v5.8.4`.
+  Its notes claim a 120k-shader precompilation pass, a frame pacer, built-in Dynamic FPS and shader
+  preparation that only re-runs when the translation changes. Nothing of that is in this tree except
+  the shared cache v2 lineage.
+- **Smaller forks now exist and carry renderer work**: `MythosOfs/Orchid` (AMD and shader work,
+  Mario Tennis first), `CheezerWheezer/CheezyEmu` (AMD FSR 4 and frame generation, branched from
+  Lichii build 117), `sylvieistaken/selevet-eglantine` (PGO/ThinLTO tuning), `Franseven/PokeDinner`
+  (Pokopia). Worth a skim only when they name a shader or renderer fix.
+- **Reddit is not a source of technical detail.** `r/switch2emu` and `r/SwitchPirates2` carry
+  gameplay clips, build announcements and shader-cache sharing threads; the recurring useful signal
+  is that shared caches are frequently corrupt and that Fritchii is recommended for Ocarina on
+  NVIDIA. Claims there need a commit to back them.
