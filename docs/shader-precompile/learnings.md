@@ -1438,3 +1438,9 @@ is not symmetric in `a` and `c` was silently wrong.
 The captured-instruction test in `src/tests/video_core/native_translate.cpp` only counted and/or/not
 nodes, so it passed with the inverted table; the check that caught it was comparing the translated
 module against the lowering's own module for the same program.
+
+With the table order fixed, both stage sets render the door: vertex alone (2.34 against a baseline
+2.1-2.8) and vertex with mesh (2.80). The whole-frame mean brightness of the vertex+mesh run is
+54.2/44.8/18.6 against the baseline's 55.0/46.2/19.4, so the "shades some meshes too dark" note that
+kept those stages opt-in no longer reproduces on this scene. One frame is not enough to flip the
+default; that needs a wider sweep.
