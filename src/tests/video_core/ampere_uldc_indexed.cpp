@@ -61,18 +61,22 @@ TEST_CASE("Indexed ULDC lowers subword widths through Maxwell LDC", "[video_core
     CHECK(byte.offset == 3);
 }
 
-TEST_CASE("Indexed ULDC keeps the bank, width and mode checks", "[video_core][ampere][uldc]") {
-    // An unbound bank, an unknown width and an unbound destination all stay rejected, so
-    // accepting subword sizes did not loosen the rest of the encoding. An offset the index
-    // register can align is accepted: the host reads the aligned word either way.
-    for (const auto change : std::array{
-             std::array{54U, 5U, 18U}, std::array{73U, 3U, 1U},
-             std::array{73U, 3U, 3U}, std::array{16U, 8U, 63U}}) {
+TEST_CASE("Indexed ULDC keeps the bank and mode checks", "[video_core][ampere][uldc]") {
+    // An unbound bank and an unbound destination stay rejected. An offset the index register can
+    // align is accepted: the host reads the aligned word either way.
+    for (const auto change : std::array{std::array{54U, 5U, 18U}, std::array{16U, 8U, 63U}}) {
         auto instruction = CapturedHalfword;
         SetBits(instruction, change[0], change[1], change[2]);
         const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
         CHECK_FALSE(lowered);
     }
+    // Signed subword widths reach Maxwell's own signed LDC sizes rather than being refused.
+    auto signed_byte = CapturedHalfword;
+    SetBits(signed_byte, 73, 3, 1);
+    CHECK(LoweredLoad(signed_byte).size == Shader::Maxwell::LDC::Size::S8);
+    auto signed_halfword = CapturedHalfword;
+    SetBits(signed_halfword, 73, 3, 3);
+    CHECK(LoweredLoad(signed_halfword).size == Shader::Maxwell::LDC::Size::S16);
     auto odd = CapturedHalfword;
     SetBits(odd, 38, 16, 1);
     CHECK(LowerToMaxwell(std::array{odd, Exit}));
