@@ -3,28 +3,50 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstdlib>
 
 #include "common/common_types.h"
 
-// EDEN_NX2_PC_PROBE=1: keeps the guest PC each core last executed a block at, so a guest that
-// spins can be located from the debug server (`core_pc`) instead of guessed at. One relaxed store
-// per block, and nothing at all unless the variable is set.
+// EDEN_NX2_PC_PROBE=1: keeps where each core last ran a block - PC, stack pointer, frame pointer
+// and link register - so a guest that spins can be located, and its caller read, from the debug
+// server (`core_pc`) instead of guessed at. Relaxed stores, and nothing at all unless the variable
+// is set.
 namespace Core::PcProbe {
 
 inline const bool g_enabled = std::getenv("EDEN_NX2_PC_PROBE") != nullptr;
 
-inline std::atomic<u64> g_pc[4]{};
+struct Sample {
+    u64 pc{};
+    u64 sp{};
+    u64 fp{};
+    u64 lr{};
+};
 
-inline void Store(size_t core, u64 pc) {
-    if (core < std::size(g_pc)) {
-        g_pc[core].store(pc, std::memory_order_relaxed);
+inline std::array<std::atomic<u64>, 4> g_pc{};
+inline std::array<std::atomic<u64>, 4> g_sp{};
+inline std::array<std::atomic<u64>, 4> g_fp{};
+inline std::array<std::atomic<u64>, 4> g_lr{};
+
+inline void Store(size_t core, const Sample& sample) {
+    if (core >= std::size(g_pc)) {
+        return;
     }
+    g_pc[core].store(sample.pc, std::memory_order_relaxed);
+    g_sp[core].store(sample.sp, std::memory_order_relaxed);
+    g_fp[core].store(sample.fp, std::memory_order_relaxed);
+    g_lr[core].store(sample.lr, std::memory_order_relaxed);
 }
 
-inline u64 Load(size_t core) {
-    return core < std::size(g_pc) ? g_pc[core].load(std::memory_order_relaxed) : 0;
+inline Sample Load(size_t core) {
+    if (core >= std::size(g_pc)) {
+        return {};
+    }
+    return Sample{.pc = g_pc[core].load(std::memory_order_relaxed),
+                  .sp = g_sp[core].load(std::memory_order_relaxed),
+                  .fp = g_fp[core].load(std::memory_order_relaxed),
+                  .lr = g_lr[core].load(std::memory_order_relaxed)};
 }
 
 } // namespace Core::PcProbe

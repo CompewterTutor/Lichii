@@ -235,10 +235,15 @@ json CorePc(ToolState& state, const json&) {
     RequireRunning(state);
     json cores = json::array();
     for (size_t core = 0; core < std::size(Core::PcProbe::g_pc); ++core) {
-        const u64 pc = Core::PcProbe::Load(core);
-        if (pc != 0) {
-            cores.push_back({{"core", core}, {"pc", fmt::format("{:#018x}", pc)}});
+        const Core::PcProbe::Sample sample = Core::PcProbe::Load(core);
+        if (sample.pc == 0) {
+            continue;
         }
+        cores.push_back({{"core", core},
+                         {"pc", fmt::format("{:#018x}", sample.pc)},
+                         {"sp", fmt::format("{:#018x}", sample.sp)},
+                         {"fp", fmt::format("{:#018x}", sample.fp)},
+                         {"lr", fmt::format("{:#018x}", sample.lr)}});
     }
     return {{"enabled", Core::PcProbe::g_enabled}, {"cores", std::move(cores)}};
 }

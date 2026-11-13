@@ -57,6 +57,7 @@ public:
     void ExceptionRaised(u64 pc, Dynarmic::A64::Exception exception) override;
     void CallSVC(u32 svc) override;
     void AddTicks(u64 ticks) override;
+    void RecordPcProbe();
     u64 GetTicksRemaining() override;
     u64 GetCNTPCT() override;
     bool CheckMemoryAccess(u64 addr, u64 size, Kernel::DebugWatchpointType type);
@@ -88,6 +89,7 @@ public:
     }
 
     HaltReason RunThread(Kernel::KThread* thread) override;
+    void RecordPcProbe();
     HaltReason StepThread(Kernel::KThread* thread) override;
 
     void GetContext(Kernel::Svc::ThreadContext& ctx) const override;
