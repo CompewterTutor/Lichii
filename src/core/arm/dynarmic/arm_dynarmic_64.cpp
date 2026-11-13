@@ -12,6 +12,7 @@
 #include "common/settings.h"
 #include "core/arm/dynarmic/arm_dynarmic.h"
 #include "core/arm/dynarmic/arm_dynarmic_64.h"
+#include "core/arm/pc_probe.h"
 #include "core/arm/dynarmic/dynarmic_exclusive_monitor.h"
 #include "core/arm/dynarmic/window_trace.h"
 #include "core/core_timing.h"
@@ -241,6 +242,9 @@ void DynarmicCallbacks64::CallSVC(u32 svc) {
 
 void DynarmicCallbacks64::AddTicks(u64 ticks) {
     ASSERT(!m_parent.m_uses_wall_clock && "Dynarmic ticking disabled");
+    if (Core::PcProbe::g_enabled) {
+        Core::PcProbe::Store(m_parent.m_core_index, m_parent.m_jit->GetPC());
+    }
     // Divide the number of ticks by the amount of CPU cores. TODO(Subv): This yields only a
     // rough approximation of the amount of executed ticks in the system, it may be thrown off
     // if not all cores are doing a similar amount of work. Instead of doing this, we should
@@ -522,13 +526,20 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
 HaltReason ArmDynarmic64::RunThread(Kernel::KThread* thread) {
     m_jit->ClearExclusiveState();
     if (!Kernel::Nx2ThreadStats::g_enabled || m_core_index >= g_jit_counters.size()) {
-        return TranslateHaltReason(m_jit->Run());
+        const Dynarmic::HaltReason halt = m_jit->Run();
+        if (Core::PcProbe::g_enabled) {
+            Core::PcProbe::Store(m_core_index, m_jit->GetPC());
+        }
+        return TranslateHaltReason(halt);
     }
     namespace Stats = Kernel::Nx2ThreadStats;
     auto& timing = m_system.CoreTiming();
     Stats::BeginRun();
     const u64 start = timing.GetClockTicks();
     const Dynarmic::HaltReason hr = m_jit->Run();
+    if (Core::PcProbe::g_enabled) {
+        Core::PcProbe::Store(m_core_index, m_jit->GetPC());
+    }
     const u64 end = timing.GetClockTicks();
     const Stats::Exit exit = Dynarmic::Has(hr, SupervisorCall) ? Stats::Exit::Svc
                              : Dynarmic::Has(hr, BreakLoop)    ? Stats::Exit::Interrupt
@@ -543,7 +554,11 @@ HaltReason ArmDynarmic64::RunThread(Kernel::KThread* thread) {
 
 HaltReason ArmDynarmic64::StepThread(Kernel::KThread* thread) {
     m_jit->ClearExclusiveState();
-    return TranslateHaltReason(m_jit->Step());
+    const Dynarmic::HaltReason halt = m_jit->Step();
+    if (Core::PcProbe::g_enabled) {
+        Core::PcProbe::Store(m_core_index, m_jit->GetPC());
+    }
+    return TranslateHaltReason(halt);
 }
 
 u32 ArmDynarmic64::GetSvcNumber() const {

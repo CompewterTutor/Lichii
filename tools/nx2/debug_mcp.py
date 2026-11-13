@@ -47,6 +47,13 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
+        "name": "core_pc",
+        "description": "The guest PC each core last executed a block at, when the emulator runs "
+                       "with EDEN_NX2_PC_PROBE=1. A spinning guest shows the same PC for the core "
+                       "that is running; a core that has not run a block is left out.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "step",
         "description": "Runs until 'frames' (default 1) more frames have been presented, then "
                        "pauses again. Returns the number actually advanced, the present count and "

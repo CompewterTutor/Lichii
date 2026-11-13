@@ -22,6 +22,7 @@
 #include "core/core.h"
 #include "core/debugger/nx2_debug_server.h"
 #include "core/debugger/nx2_debug_tools.h"
+#include "core/arm/pc_probe.h"
 #include "core/frontend/framebuffer_layout.h"
 #include "hid_core/debug_input.h"
 #include "core/memory.h"
@@ -225,6 +226,21 @@ void RequireRunning(const ToolState& state) {
 
 u64 Presents() {
     return g_nx2_present_count.load(std::memory_order_relaxed);
+}
+
+
+/// EDEN_NX2_PC_PROBE: the guest PC each core last executed a block at, so a spinning guest can be
+/// located without a debugger. A core that has not run a block since the switch is left out.
+json CorePc(ToolState& state, const json&) {
+    RequireRunning(state);
+    json cores = json::array();
+    for (size_t core = 0; core < std::size(Core::PcProbe::g_pc); ++core) {
+        const u64 pc = Core::PcProbe::Load(core);
+        if (pc != 0) {
+            cores.push_back({{"core", core}, {"pc", fmt::format("{:#018x}", pc)}});
+        }
+    }
+    return {{"enabled", Core::PcProbe::g_enabled}, {"cores", std::move(cores)}};
 }
 
 json Pause(ToolState& state, const json&) {
@@ -1049,6 +1065,7 @@ Handlers MakeHandlers(const std::shared_ptr<ToolState>& state) {
         {"pause", handler(Pause)},
         {"resume", handler(Resume)},
         {"step", handler(Step)},
+        {"core_pc", handler(CorePc)},
         {"screenshot", handler(Screenshot)},
         {"log_tail", handler(LogTail)},
         {"log_filter", handler(LogFilter)},
