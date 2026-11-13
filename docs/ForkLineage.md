@@ -135,6 +135,14 @@ git log --oneline --no-merges HEAD..origin/bisect/oot-6
 A commit that appears only on the other side of `HEAD...<ref>` is not in this tree; same subject with
 a different hash usually means both lines took the same change independently.
 
+## Fritchii is gone (2026-11-13)
+
+`Frizti/Fritchii` returns 404 from the GitHub API and has no releases; only an unrelated
+`Frizti/epic` repository remains under that account. The 2026-11-12 survey fetched it, and those
+`refs/remotes/fritchii/*` commits are still in this checkout, so its history is not lost here, but
+there is no upstream to follow any more. Stop watching it and do not treat its release notes as a
+current source.
+
 ## Survey 2026-11-12
 
 Facts that changed since the survey above.
