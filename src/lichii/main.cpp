@@ -3,8 +3,18 @@
 
 #include <QApplication>
 #include <QMessageBox>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <exception>
+#include <filesystem>
+#include <string>
+
+#include "core/file_sys/nup_writer.h"
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #include "common/fs/fs_paths.h"
 #include "common/fs/path_util.h"
@@ -44,6 +54,69 @@ static void OverrideWindowsFont() {
     }
 }
 #endif
+
+namespace {
+
+#ifdef _WIN32
+/// A GUI build has no console of its own; borrow the one that started it so --pack-dump can report.
+void AttachParentConsole() {
+    if (AttachConsole(ATTACH_PARENT_PROCESS) == 0) {
+        return;
+    }
+    std::FILE* stream{};
+    (void)freopen_s(&stream, "CONOUT$", "w", stdout);
+    (void)freopen_s(&stream, "CONOUT$", "w", stderr);
+}
+#endif
+
+/// Packs a loose dump (base/exefs plus romfs, with any updates and DLC) into a NUP container.
+int PackDumpFromCommandLine(const std::filesystem::path& dump,
+                            const std::filesystem::path& archive) {
+#ifdef _WIN32
+    AttachParentConsole();
+#endif
+    using namespace FileSys::Nup;
+    std::printf("packing %s\n     to %s\n", dump.string().c_str(), archive.string().c_str());
+    std::fflush(stdout);
+    if (!IsLooseDump(dump)) {
+        std::fprintf(stderr, "not a loose dump: %s needs exefs/main and a romfs\n",
+                     dump.string().c_str());
+        return EXIT_FAILURE;
+    }
+    constexpr u64 mib = 1024ULL * 1024ULL;
+    int last_percent = -1;
+    const auto progress = [&last_percent](const PackProgress& pack) {
+        const int percent = pack.bytes_total == 0
+                                ? 100
+                                : static_cast<int>(pack.bytes_done * 100 / pack.bytes_total);
+        if (percent == last_percent) {
+            return;
+        }
+        last_percent = percent;
+        std::printf("\r%3d%%  %llu/%llu MiB  %llu/%llu files", percent,
+                    static_cast<unsigned long long>(pack.bytes_done / mib),
+                    static_cast<unsigned long long>(pack.bytes_total / mib),
+                    static_cast<unsigned long long>(pack.files_done),
+                    static_cast<unsigned long long>(pack.files_total));
+        std::fflush(stdout);
+    };
+    std::string error;
+    const PackResult result = PackDump(dump, archive, PackOptions{}, progress, nullptr, &error);
+    std::printf("\n");
+    if (result == PackResult::Success) {
+        std::printf("wrote %s\n", archive.string().c_str());
+        return EXIT_SUCCESS;
+    }
+    const char* const reason = result == PackResult::InvalidSource ? "invalid source"
+                               : result == PackResult::IoError     ? "io error"
+                               : result == PackResult::Cancelled   ? "cancelled"
+                                                                   : "failed";
+    std::fprintf(stderr, "packing %s: %s%s%s\n", reason, dump.string().c_str(),
+                 error.empty() ? "" : ": ", error.c_str());
+    return EXIT_FAILURE;
+}
+
+} // Anonymous namespace
 
 static Qt::HighDpiScaleFactorRoundingPolicy GetHighDpiRoundingPolicy() {
 #ifdef _WIN32
@@ -99,6 +172,18 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 #endif
+
+    // Packs a loose dump without starting the frontend, so a dump can be prepared from a script.
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--pack-dump") != 0) {
+            continue;
+        }
+        if (i + 2 >= argc) {
+            std::fprintf(stderr, "usage: lichii --pack-dump <dump directory> <archive>\n");
+            return EXIT_FAILURE;
+        }
+        return PackDumpFromCommandLine(argv[i + 1], argv[i + 2]);
+    }
 
     bool has_broken_vulkan = false;
     bool is_child = false;

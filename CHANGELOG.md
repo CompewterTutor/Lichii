@@ -6,6 +6,11 @@ New entries go under `## [Unreleased]`; `tools/ci/bump-version.sh` turns them in
 
 ## [Unreleased]
 
+### Added
+
+- `lichii --pack-dump <dump directory> <archive>` packs a loose game dump into a NUP container
+  without opening the frontend, so a dump can be prepared from a script.
+
 ### Changed
 
 - The user directory is now `lichii` rather than `eden`. An existing Eden profile is offered for
